@@ -22,3 +22,6 @@ canary
 *.so
 *~
 *.swp
+libstdc++.so.6
+deploy_bin.sh
+config.lua
