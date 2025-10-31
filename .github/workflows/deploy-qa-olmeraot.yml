@@ -1,0 +1,43 @@
+name: Deploy QA (OlmeraOT)
+
+on:
+  push:
+    branches: [ develop ]
+
+concurrency:
+  group: deploy-qa-olmeraot
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to QA (VPS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: (Opcional) Establecer known_hosts
+        if: ${{ secrets.SSH_KNOWN_HOSTS != '' }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: SSH into VPS and deploy develop
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            echo "[QA] Deploy en ${{ secrets.VPS_QA_PATH }}"
+            cd "${{ secrets.VPS_QA_PATH }}"
+            git fetch --all --prune
+            git checkout develop
+            git reset --hard origin/develop
+            git submodule sync --recursive
+            git submodule update --init --recursive --remote
+            /usr/local/bin/olmera-render-config qa
+            sudo systemctl restart olmeraot-qa.service
+            systemctl --no-pager --lines=3 status olmeraot-qa.service || true
+            tail -n 120 /var/log/olmeraot/qa.log || true
