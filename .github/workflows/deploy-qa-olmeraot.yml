@@ -3,10 +3,16 @@ name: Deploy QA (OlmeraOT)
 on:
   push:
     branches: [ develop ]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-qa-olmeraot
   cancel-in-progress: false
+
+env:
+  # Lee las URLs fijas desde Repository Variables (Settings → Variables → Actions)
+  CORE_ZIP_URL_QA: ${{ vars.CORE_ZIP_URL_QA }}
+  CORE_SHA_URL_QA: ${{ vars.CORE_SHA_URL_QA }}
 
 jobs:
   deploy:
@@ -24,101 +30,63 @@ jobs:
             echo "No SSH_KNOWN_HOSTS provided; skipping."
           fi
 
-      - name: SSH into VPS and deploy develop (datapack/Lua)
+      - name: SSH into VPS and deploy develop
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORE_ZIP_URL_QA: ${{ env.CORE_ZIP_URL_QA }}
+          CORE_SHA_URL_QA: ${{ env.CORE_SHA_URL_QA }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: CORE_ZIP_URL_QA,CORE_SHA_URL_QA
           script_stop: true
           script: |
             set -euo pipefail
+
             echo "[QA] Deploy en ${{ secrets.VPS_QA_PATH }}"
             cd "${{ secrets.VPS_QA_PATH }}"
+
+            echo "[QA] Sync código (develop + submodules)"
             git fetch --all --prune
             git checkout develop
             git reset --hard origin/develop
             git submodule sync --recursive
             git submodule update --init --recursive --remote
+
+            echo "[QA] Render config"
             /usr/local/bin/olmera-render-config qa
-            sudo systemctl restart olmeraot-qa.service
-            systemctl --no-pager --lines=3 status olmeraot-qa.service || true
-            tail -n 120 /var/log/olmeraot/qa.log || true
 
-      - name: (Opcional) Descargar binario core y promover si cambió (QA)
-        if: ${{ secrets.CORE_ARTIFACT_URL_QA != '' }}
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          CORE_ARTIFACT_URL_QA: ${{ secrets.CORE_ARTIFACT_URL_QA }}
-          CORE_ARTIFACT_SHA256_QA: ${{ secrets.CORE_ARTIFACT_SHA256_QA }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          envs: CORE_ARTIFACT_URL_QA,CORE_ARTIFACT_SHA256_QA
-          script: |
-            set -euo pipefail
-            ART_URL="${CORE_ARTIFACT_URL_QA}"
-            ART_SHA="${CORE_ARTIFACT_SHA256_QA:-}"
-            DEST_BASE="/opt/olmeraot/qa"
-            RELEASES="$DEST_BASE/releases"
-            BIN_DIR="$DEST_BASE/bin"
-            UNIT="olmeraot-qa.service"
+            BIN_DIR="/opt/olmeraot/qa/bin"
+            BIN_PATH="${BIN_DIR}/olmeraot"
+            SHA_MARKER="${BIN_DIR}/OLMERAOT_ZIP_SHA"
 
-            mkdir -p "$RELEASES" "$BIN_DIR"
-            TMP="/tmp/olmeraot-qa.$$"
-            rm -rf "$TMP" && mkdir -p "$TMP"
+            mkdir -p "${BIN_DIR}"
 
-            # Herramientas necesarias
-            command -v curl >/dev/null 2>&1 || sudo apt-get update -y
-            command -v curl >/dev/null 2>&1 || sudo apt-get install -y curl
-            command -v unzip >/dev/null 2>&1 || sudo apt-get install -y unzip
+            echo "[QA] Descargando SHA remoto"
+            curl -fsSL -o /tmp/SHA256SUMS "$CORE_SHA_URL_QA"
 
-            echo "[QA] Descargando artifact de core: $ART_URL"
-            curl -fsSL "$ART_URL" -o "$TMP/olmeraot.zip"
+            REMOTE_SHA="$(awk '{print $1}' /tmp/SHA256SUMS)"
+            LOCAL_SHA="$(cat "${SHA_MARKER}" 2>/dev/null || true)"
 
-            if [ -n "$ART_SHA" ]; then
-              echo "$ART_SHA  $TMP/olmeraot.zip" | sha256sum -c -
-            fi
-
-            unzip -o "$TMP/olmeraot.zip" -d "$TMP/extract"
-
-            # Localiza el binario dentro del zip
-            if [ ! -f "$TMP/extract/olmeraot" ]; then
-              CANDIDATE="$(find "$TMP/extract" -maxdepth 2 -type f -name 'olmeraot' | head -n1 || true)"
-              [ -n "$CANDIDATE" ] || { echo "[QA] No se encontró binario 'olmeraot' en el zip"; exit 1; }
-              mv "$CANDIDATE" "$TMP/extract/olmeraot"
-            fi
-            chmod +x "$TMP/extract/olmeraot"
-
-            # SHA del binario nuevo
-            NEW_SHA="$(sha256sum "$TMP/extract/olmeraot" | awk '{print $1}')"
-            echo "[QA] NEW_SHA=$NEW_SHA"
-
-            # SHA del binario actual (si existe)
-            CURRENT_BIN="$(readlink -f "$BIN_DIR/olmeraot" || true)"
-            if [ -n "$CURRENT_BIN" ] && [ -f "$CURRENT_BIN" ]; then
-              CUR_SHA="$(sha256sum "$CURRENT_BIN" | awk '{print $1}')"
+            if [ -n "${LOCAL_SHA}" ] && [ "${LOCAL_SHA}" = "${REMOTE_SHA}" ] && [ -x "${BIN_PATH}" ]; then
+              echo "[QA] Binario ya actualizado (SHA coincide). No se descarga ZIP."
             else
-              CUR_SHA=""
+              echo "[QA] Descargando ZIP nuevo"
+              curl -fsSL -o /tmp/olmeraot.zip "$CORE_ZIP_URL_QA"
+
+              echo "[QA] Verificando ZIP con SHA256SUMS"
+              pushd /tmp >/dev/null
+              sha256sum --ignore-missing -c /tmp/SHA256SUMS
+              popd >/dev/null
+
+              echo "[QA] Descomprimiendo ZIP al bin dir"
+              unzip -o /tmp/olmeraot.zip -d "${BIN_DIR}"
+              chmod +x "${BIN_PATH}"
+              echo "${REMOTE_SHA}" > "${SHA_MARKER}"
             fi
-            echo "[QA] CUR_SHA=${CUR_SHA:-<none>}"
 
-            if [ "$NEW_SHA" = "$CUR_SHA" ] && [ -n "$CUR_SHA" ]; then
-              echo "[QA] El binario no cambió. No se promueve ni se reinicia."
-              exit 0
-            fi
-
-            VER="$(date +%Y%m%d-%H%M%S)"
-            TARGET="$RELEASES/$VER"
-            mkdir -p "$TARGET"
-            mv "$TMP/extract/olmeraot" "$TARGET/olmeraot"
-            ln -sfn "../releases/$VER/olmeraot" "$BIN_DIR/olmeraot"
-            echo "[QA] Binario promovido a $TARGET y symlink actualizado."
-
-            echo "[QA] Reiniciando servicio por binario nuevo..."
-            sudo systemctl restart "$UNIT"
-            sleep 1
-            systemctl --no-pager --lines=3 status "$UNIT" || true
+            echo "[QA] Reiniciando servicio (QA sí reinicia)"
+            sudo systemctl restart olmeraot-qa.service
+            systemctl --no-pager --lines=5 status olmeraot-qa.service || true
             tail -n 120 /var/log/olmeraot/qa.log || true

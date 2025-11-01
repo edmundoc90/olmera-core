@@ -3,131 +3,75 @@ name: Promote QA Binary to Prod (Manual)
 on:
   workflow_dispatch:
     inputs:
-      qa_artifact_run_id:
-        description: "Run ID del workflow de Build QA que contiene el artifact del binario"
-        required: true
-      artifact_name:
-        description: "Nombre del artifact (ZIP) a promover (exacto)"
-        required: true
-      sha256_file_name:
-        description: "Nombre del archivo de checksums (ej. SHA256SUMS)"
-        required: true
-      restart_prod:
-        description: "¿Reiniciar Prod después de copiar? (yes/no)"
-        required: true
-        default: "no"
+      reason:
+        description: "Motivo/nota del promote (opcional)"
+        required: false
+        default: ""
 
 concurrency:
-  group: promote-binary-prod
+  group: promote-qa-to-prod
   cancel-in-progress: false
+
+permissions:
+  contents: write   # Necesario para leer descargas y publicar/actualizar releases
 
 jobs:
   promote:
-    name: Promote QA Binary → PROD
+    name: Promote QA→PROD
     runs-on: ubuntu-latest
+    env:
+      QA_TAG: qa-latest
+      PROD_TAG: prod-latest
     steps:
-      - name: Descargar artifact ZIP desde el run de QA
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.event.inputs.artifact_name }}
-          path: ./artifact
-          run-id: ${{ github.event.inputs.qa_artifact_run_id }}
+      - name: Checkout (requerido por algunas actions)
+        uses: actions/checkout@v4
 
-      - name: Descargar archivo SHA256SUMS desde el run de QA
-        uses: actions/download-artifact@v4
+      - name: Descargar assets desde QA (qa-latest)
+        uses: dawidd6/action-download-release@v2
         with:
-          name: ${{ github.event.inputs.sha256_file_name }}
-          path: ./artifact
-          run-id: ${{ github.event.inputs.qa_artifact_run_id }}
+          tag: ${{ env.QA_TAG }}
+          repo: ${{ github.repository }}
+          file: |
+            olmeraot-linux-x86_64.zip
+            SHA256SUMS
 
-      - name: Verificar SHA local
+      # (Opcional) Verificar que ambos archivos existen y tienen tamaño > 0
+      - name: Validar archivos descargados
         run: |
-          set -euo pipefail
-          ls -l ./artifact
-          zip_file="./artifact/${{ github.event.inputs.artifact_name }}"
-          sha_file="./artifact/${{ github.event.inputs.sha256_file_name }}"
-          echo "[CI] Verificando SHA del ZIP contra ${sha_file}"
-          sha256sum "$zip_file"
-          grep "$(sha256sum "$zip_file" | awk '{print $1}')" "$sha_file" >/dev/null
-          echo "[CI] SHA verificado OK."
+          ls -l
+          test -s "olmeraot-linux-x86_64.zip"
+          test -s "SHA256SUMS"
 
-      - name: Extraer binario olmeraot del ZIP
+      # (Opcional recomendado) Borrar assets previos del release prod-latest para evitar duplicados
+      - name: Eliminar assets previos de PROD
+        uses: svenstaro/delete-release-assets@v1
+        with:
+          tag: ${{ env.PROD_TAG }}
+          assets: |
+            olmeraot-linux-x86_64.zip
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publicar/actualizar release de PROD con los mismos assets
+      - name: Publicar en PROD (prod-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.PROD_TAG }}
+          name: PROD Latest
+          body: |
+            Promoted from ${{ env.QA_TAG }} by ${{ github.actor }}.
+            Commit source: ${{ github.sha }}
+            Reason: ${{ github.event.inputs.reason }}
+          draft: false
+          prerelease: false
+          files: |
+            olmeraot-linux-x86_64.zip
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mostrar resumen
         run: |
-          set -euo pipefail
-          unzip -l "./artifact/${{ github.event.inputs.artifact_name }}"
-          unzip -o "./artifact/${{ github.event.inputs.artifact_name }}" -d ./unzipped
-          # Ajusta la ruta si tu ZIP tiene subcarpetas; dejamos búsqueda flexible:
-          found="$(find ./unzipped -type f -name 'olmeraot' | head -n1)"
-          if [ -z "$found" ]; then
-            echo "No se encontró 'olmeraot' dentro del ZIP."
-            exit 1
-          fi
-          mv "$found" ./artifact/olmeraot
-          chmod +x ./artifact/olmeraot
-          ls -l ./artifact/olmeraot
-
-      - name: Subir binario a VPS si cambia el hash
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "artifact/olmeraot"
-          target: "${{ secrets.VPS_PROD_BIN_DIR }}/incoming"
-          overwrite: true
-
-      - name: Instalar binario en PROD si es diferente (con hash-guard)
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-
-            BIN_DIR="${{ secrets.VPS_PROD_BIN_DIR }}"
-            CUR_BIN="${BIN_DIR}/olmeraot"
-            NEW_BIN="${BIN_DIR}/incoming/olmeraot"
-
-            if [ ! -f "$NEW_BIN" ]; then
-              echo "[PROD] No llegó el nuevo binario."
-              exit 1
-            fi
-
-            mkdir -p "$BIN_DIR"
-            chmod +x "$NEW_BIN"
-
-            new_sha="$(sha256sum "$NEW_BIN" | awk '{print $1}')"
-            cur_sha="absent"
-            if [ -f "$CUR_BIN" ]; then
-              cur_sha="$(sha256sum "$CUR_BIN" | awk '{print $1}')"
-            fi
-
-            echo "[PROD] SHA actual: $cur_sha"
-            echo "[PROD] SHA nuevo  : $new_sha"
-
-            if [ "$new_sha" = "$cur_sha" ]; then
-              echo "[PROD] El binario es idéntico. No se reemplaza."
-              exit 0
-            fi
-
-            echo "[PROD] Cambió el binario. Versionando el actual y activando el nuevo..."
-            ts="$(date +%Y%m%d-%H%M%S)"
-            if [ -f "$CUR_BIN" ]; then
-              mv "$CUR_BIN" "${BIN_DIR}/olmeraot-${ts}.bak"
-            fi
-            mv "$NEW_BIN" "$CUR_BIN"
-            chmod +x "$CUR_BIN"
-
-            echo "[PROD] Binario actualizado."
-
-            if [ "${{ github.event.inputs.restart_prod }}" = "yes" ]; then
-              echo "[PROD] Reiniciando servicio por petición del input."
-              sudo systemctl restart olmeraot-prod.service
-              sleep 1
-              systemctl --no-pager --lines=5 status olmeraot-prod.service || true
-              tail -n 120 /var/log/olmeraot/prod.log || true
-            else
-              echo "[PROD] No se reinicia (restart_prod=no)."
-            fi
+          echo "Promoted QA ($QA_TAG) → PROD ($PROD_TAG)"
+          sha256sum olmeraot-linux-x86_64.zip || true

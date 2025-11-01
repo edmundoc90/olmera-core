@@ -1,31 +1,21 @@
-name: Deploy Prod (OlmeraOT, no restart, scripts only)
+name: Deploy PROD (OlmeraOT)
 
 on:
-  # Manual cuando lo necesites
-  workflow_dispatch:
-  # Automático al merge a main SOLO si cambian scripts/datapack (no C++)
   push:
     branches: [ main ]
-    paths:
-      - "data/**"
-      - "data-canary/**"
-      - "data-otservbr-global/**"
-      - "overrides/**"
-      - "**/*.lua"
-      - "scripts/**"
-      - "config.lua.dist"
-      - "infra/**"
-      # Evitamos recompilar por cambios en C++
-      - "!src/**"
-      - "!tests/**"
+  workflow_dispatch:
 
 concurrency:
   group: deploy-prod-olmeraot
   cancel-in-progress: false
 
+env:
+  CORE_ZIP_URL_PROD: ${{ vars.CORE_ZIP_URL_PROD }}
+  CORE_SHA_URL_PROD: ${{ vars.CORE_SHA_URL_PROD }}
+
 jobs:
   deploy:
-    name: Deploy to PROD (VPS) — scripts/datapack only
+    name: Deploy to PROD (VPS)
     runs-on: ubuntu-latest
 
     steps:
@@ -39,43 +29,60 @@ jobs:
             echo "No SSH_KNOWN_HOSTS provided; skipping."
           fi
 
-      - name: SSH into VPS and deploy main (scripts/datapack)
+      - name: SSH into VPS and stage binary (no restart)
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORE_ZIP_URL_PROD: ${{ env.CORE_ZIP_URL_PROD }}
+          CORE_SHA_URL_PROD: ${{ env.CORE_SHA_URL_PROD }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: CORE_ZIP_URL_PROD,CORE_SHA_URL_PROD
           script_stop: true
           script: |
             set -euo pipefail
 
-            echo "[PROD] Deploy en ${{ secrets.VPS_PROD_PATH }} (sin restart, scripts/datapack)"
+            echo "[PROD] Deploy (sin restart) en ${{ secrets.VPS_PROD_PATH }}"
             cd "${{ secrets.VPS_PROD_PATH }}"
 
-            echo "[PROD] Limpieza, fetch y checkout main"
+            echo "[PROD] Sync código (main + submodules)"
             git fetch --all --prune
             git checkout main
-            # Conserva el binario actual. Solo sincroniza scripts/datapack
             git reset --hard origin/main
-
-            echo "[PROD] Submodules"
             git submodule sync --recursive
             git submodule update --init --recursive --remote
 
-            echo "[PROD] Render de config prod (no reinicia el servicio)"
+            echo "[PROD] Render config"
             /usr/local/bin/olmera-render-config prod
 
-            echo "[PROD] Resumen de cambios en scripts/datapack (HEAD@{1}..HEAD)"
-            if git rev-parse -q --verify HEAD@{1} >/dev/null; then
-              git diff --name-only HEAD@{1}..HEAD | sed 's/^/[changed] /' || true
+            BIN_DIR="/opt/olmeraot/prod/bin"
+            BIN_PATH="${BIN_DIR}/olmeraot"
+            SHA_MARKER="${BIN_DIR}/OLMERAOT_ZIP_SHA"
+
+            mkdir -p "${BIN_DIR}"
+
+            echo "[PROD] Descargando SHA remoto"
+            curl -fsSL -o /tmp/SHA256SUMS "$CORE_SHA_URL_PROD"
+            REMOTE_SHA="$(awk '{print $1}' /tmp/SHA256SUMS)"
+            LOCAL_SHA="$(cat "${SHA_MARKER}" 2>/dev/null || true)"
+
+            if [ -n "${LOCAL_SHA}" ] && [ "${LOCAL_SHA}" = "${REMOTE_SHA}" ] && [ -x "${BIN_PATH}" ]; then
+              echo "[PROD] Binario ya actualizado (SHA coincide). No se descarga ZIP."
             else
-              echo "[warn] No hay HEAD@{1}; mostrando último commit"
-              git log -1 --name-only --pretty=oneline | sed 's/^/[log] /' || true
+              echo "[PROD] Descargando ZIP nuevo"
+              curl -fsSL -o /tmp/olmeraot.zip "$CORE_ZIP_URL_PROD"
+
+              echo "[PROD] Verificando ZIP con SHA256SUMS"
+              pushd /tmp >/dev/null
+              sha256sum --ignore-missing -c /tmp/SHA256SUMS
+              popd >/dev/null
+
+              echo "[PROD] Descomprimiendo ZIP al bin dir"
+              unzip -o /tmp/olmeraot.zip -d "${BIN_DIR}"
+              chmod +x "${BIN_PATH}"
+              echo "${REMOTE_SHA}" > "${SHA_MARKER}"
             fi
 
-            echo "[PROD] Estado del servicio (NO se reinicia por política)"
-            systemctl is-active olmeraot-prod.service || true
+            echo "[PROD] Listo. (Sin reiniciar servicio automáticamente)"
             systemctl --no-pager --lines=3 status olmeraot-prod.service || true
-
-            echo "[PROD] Últimas líneas de log (para sanity-check)"
-            tail -n 80 /var/log/olmeraot/prod.log || true
