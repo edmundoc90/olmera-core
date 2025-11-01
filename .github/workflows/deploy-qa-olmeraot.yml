@@ -24,7 +24,7 @@ jobs:
             echo "No SSH_KNOWN_HOSTS provided; skipping."
           fi
 
-      - name: SSH into VPS and deploy develop
+      - name: SSH into VPS and deploy develop (datapack/Lua)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -43,4 +43,82 @@ jobs:
             /usr/local/bin/olmera-render-config qa
             sudo systemctl restart olmeraot-qa.service
             systemctl --no-pager --lines=3 status olmeraot-qa.service || true
+            tail -n 120 /var/log/olmeraot/qa.log || true
+
+      - name: (Opcional) Descargar binario core y promover si cambió (QA)
+        if: ${{ secrets.CORE_ARTIFACT_URL_QA != '' }}
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORE_ARTIFACT_URL_QA: ${{ secrets.CORE_ARTIFACT_URL_QA }}
+          CORE_ARTIFACT_SHA256_QA: ${{ secrets.CORE_ARTIFACT_SHA256_QA }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: CORE_ARTIFACT_URL_QA,CORE_ARTIFACT_SHA256_QA
+          script: |
+            set -euo pipefail
+            ART_URL="${CORE_ARTIFACT_URL_QA}"
+            ART_SHA="${CORE_ARTIFACT_SHA256_QA:-}"
+            DEST_BASE="/opt/olmeraot/qa"
+            RELEASES="$DEST_BASE/releases"
+            BIN_DIR="$DEST_BASE/bin"
+            UNIT="olmeraot-qa.service"
+
+            mkdir -p "$RELEASES" "$BIN_DIR"
+            TMP="/tmp/olmeraot-qa.$$"
+            rm -rf "$TMP" && mkdir -p "$TMP"
+
+            # Herramientas necesarias
+            command -v curl >/dev/null 2>&1 || sudo apt-get update -y
+            command -v curl >/dev/null 2>&1 || sudo apt-get install -y curl
+            command -v unzip >/dev/null 2>&1 || sudo apt-get install -y unzip
+
+            echo "[QA] Descargando artifact de core: $ART_URL"
+            curl -fsSL "$ART_URL" -o "$TMP/olmeraot.zip"
+
+            if [ -n "$ART_SHA" ]; then
+              echo "$ART_SHA  $TMP/olmeraot.zip" | sha256sum -c -
+            fi
+
+            unzip -o "$TMP/olmeraot.zip" -d "$TMP/extract"
+
+            # Localiza el binario dentro del zip
+            if [ ! -f "$TMP/extract/olmeraot" ]; then
+              CANDIDATE="$(find "$TMP/extract" -maxdepth 2 -type f -name 'olmeraot' | head -n1 || true)"
+              [ -n "$CANDIDATE" ] || { echo "[QA] No se encontró binario 'olmeraot' en el zip"; exit 1; }
+              mv "$CANDIDATE" "$TMP/extract/olmeraot"
+            fi
+            chmod +x "$TMP/extract/olmeraot"
+
+            # SHA del binario nuevo
+            NEW_SHA="$(sha256sum "$TMP/extract/olmeraot" | awk '{print $1}')"
+            echo "[QA] NEW_SHA=$NEW_SHA"
+
+            # SHA del binario actual (si existe)
+            CURRENT_BIN="$(readlink -f "$BIN_DIR/olmeraot" || true)"
+            if [ -n "$CURRENT_BIN" ] && [ -f "$CURRENT_BIN" ]; then
+              CUR_SHA="$(sha256sum "$CURRENT_BIN" | awk '{print $1}')"
+            else
+              CUR_SHA=""
+            fi
+            echo "[QA] CUR_SHA=${CUR_SHA:-<none>}"
+
+            if [ "$NEW_SHA" = "$CUR_SHA" ] && [ -n "$CUR_SHA" ]; then
+              echo "[QA] El binario no cambió. No se promueve ni se reinicia."
+              exit 0
+            fi
+
+            VER="$(date +%Y%m%d-%H%M%S)"
+            TARGET="$RELEASES/$VER"
+            mkdir -p "$TARGET"
+            mv "$TMP/extract/olmeraot" "$TARGET/olmeraot"
+            ln -sfn "../releases/$VER/olmeraot" "$BIN_DIR/olmeraot"
+            echo "[QA] Binario promovido a $TARGET y symlink actualizado."
+
+            echo "[QA] Reiniciando servicio por binario nuevo..."
+            sudo systemctl restart "$UNIT"
+            sleep 1
+            systemctl --no-pager --lines=3 status "$UNIT" || true
             tail -n 120 /var/log/olmeraot/qa.log || true

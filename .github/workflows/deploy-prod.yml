@@ -1,0 +1,81 @@
+name: Deploy Prod (OlmeraOT, no restart, scripts only)
+
+on:
+  # Manual cuando lo necesites
+  workflow_dispatch:
+  # Automático al merge a main SOLO si cambian scripts/datapack (no C++)
+  push:
+    branches: [ main ]
+    paths:
+      - "data/**"
+      - "data-canary/**"
+      - "data-otservbr-global/**"
+      - "overrides/**"
+      - "**/*.lua"
+      - "scripts/**"
+      - "config.lua.dist"
+      - "infra/**"
+      # Evitamos recompilar por cambios en C++
+      - "!src/**"
+      - "!tests/**"
+
+concurrency:
+  group: deploy-prod-olmeraot
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to PROD (VPS) — scripts/datapack only
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: (Opcional) Establecer known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+            chmod 644 ~/.ssh/known_hosts
+          else
+            echo "No SSH_KNOWN_HOSTS provided; skipping."
+          fi
+
+      - name: SSH into VPS and deploy main (scripts/datapack)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            echo "[PROD] Deploy en ${{ secrets.VPS_PROD_PATH }} (sin restart, scripts/datapack)"
+            cd "${{ secrets.VPS_PROD_PATH }}"
+
+            echo "[PROD] Limpieza, fetch y checkout main"
+            git fetch --all --prune
+            git checkout main
+            # Conserva el binario actual. Solo sincroniza scripts/datapack
+            git reset --hard origin/main
+
+            echo "[PROD] Submodules"
+            git submodule sync --recursive
+            git submodule update --init --recursive --remote
+
+            echo "[PROD] Render de config prod (no reinicia el servicio)"
+            /usr/local/bin/olmera-render-config prod
+
+            echo "[PROD] Resumen de cambios en scripts/datapack (HEAD@{1}..HEAD)"
+            if git rev-parse -q --verify HEAD@{1} >/dev/null; then
+              git diff --name-only HEAD@{1}..HEAD | sed 's/^/[changed] /' || true
+            else
+              echo "[warn] No hay HEAD@{1}; mostrando último commit"
+              git log -1 --name-only --pretty=oneline | sed 's/^/[log] /' || true
+            fi
+
+            echo "[PROD] Estado del servicio (NO se reinicia por política)"
+            systemctl is-active olmeraot-prod.service || true
+            systemctl --no-pager --lines=3 status olmeraot-prod.service || true
+
+            echo "[PROD] Últimas líneas de log (para sanity-check)"
+            tail -n 80 /var/log/olmeraot/prod.log || true

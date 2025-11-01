@@ -1,4 +1,3 @@
----
 name: Build - Ubuntu
 
 on:
@@ -15,6 +14,8 @@ on:
       - "tests/**/*.cpp"
     branches:
       - main
+      # Si quieres que también compile cuando merges a develop, descomenta:
+      # - develop
 
 env:
   CMAKE_BUILD_PARALLEL_LEVEL: 2
@@ -51,15 +52,16 @@ jobs:
         uses: actions/checkout@main
 
       - name: Install Linux Dependencies
-        run: >
-          sudo apt-get update && sudo apt-get install ccache linux-headers-"$(uname -r)"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache linux-headers-"$(uname -r)" zip
 
       - name: Switch to gcc-13 on Ubuntu 22.04
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt-get update
-          sudo apt install gcc-13 g++-13 -y
+          sudo apt install -y gcc-13 g++-13
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 --slave /usr/bin/g++ g++ /usr/bin/g++-13 --slave /usr/bin/gcov gcov /usr/bin/gcov-12
           sudo update-alternatives --set gcc /usr/bin/gcc-13
 
@@ -68,7 +70,7 @@ jobs:
         run: |
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt-get update
-          sudo apt-get install gcc-14 g++-14 -y
+          sudo apt-get install -y gcc-14 g++-14
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 --slave /usr/bin/g++ g++ /usr/bin/g++-14 --slave /usr/bin/gcov gcov /usr/bin/gcov-14
           sudo update-alternatives --set gcc /usr/bin/gcc-14
 
@@ -84,10 +86,9 @@ jobs:
         id: vcpkg-step
         run: |
           vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
-          echo "vcpkg commit ID: $vcpkgCommitId"
           echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
 
-      - name: Get vcpkg commit id from vcpkg.json
+      - name: Get vcpkg
         uses: lukka/run-vcpkg@main
         with:
           vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
@@ -103,7 +104,7 @@ jobs:
           configurePreset: ${{ matrix.buildtype }}
           buildPreset: ${{ matrix.buildtype }}
 
-      - name: Create and Upload Artifact
+      - name: Create and Upload Artifact (matrix)
         uses: actions/upload-artifact@main
         with:
           name: canary-${{ matrix.os }}-${{ matrix.buildtype }}-${{ github.sha }}
@@ -117,3 +118,38 @@ jobs:
       - name: Run Integration Tests
         run: |
           ctest -V -R integration
+
+      # ====== PUBLICACIÓN QA (SOLO ubuntu-22.04 + linux-release) ======
+      - name: Package binary for QA release (zip + sha)
+        if: matrix.os == 'ubuntu-22.04' && matrix.buildtype == 'linux-release'
+        run: |
+          set -euo pipefail
+          BIN_DIR="${{ github.workspace }}/build/linux-release/bin"
+          ls -l "$BIN_DIR"
+          chmod +x "$BIN_DIR/olmeraot"
+
+          cd "$BIN_DIR"
+          zip -9 "olmeraot-qa.zip" "olmeraot"
+          sha256sum "olmeraot-qa.zip" > SHA256SUMS
+          echo "BIN_DIR=$BIN_DIR" >> $GITHUB_ENV
+
+      - name: Upload to fixed QA release (tag: qa)
+        if: matrix.os == 'ubuntu-22.04' && matrix.buildtype == 'linux-release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: qa
+          name: Canary QA Build
+          body: |
+            Latest QA build from ${{ github.sha }}.
+            Matrix: ${{ matrix.os }} / ${{ matrix.buildtype }}
+          files: |
+            ${{ env.BIN_DIR }}/olmeraot-qa.zip
+            ${{ env.BIN_DIR }}/SHA256SUMS
+          prerelease: true
+          draft: false
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          make_latest: false
+          overwrite: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
