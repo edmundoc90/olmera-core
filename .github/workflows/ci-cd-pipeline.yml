@@ -50,9 +50,7 @@ jobs:
               - 'data-canary/**/*.lua'
               - 'data-canary/**/*.xml'
             overrides:
-              - 'overrides/**/*.lua'
-              - 'overrides/**/*.xml'
-              - 'overrides/configs/**'
+              - 'overrides/**'
 
   # ============================================================================
   # STAGE 2: Build & Test
