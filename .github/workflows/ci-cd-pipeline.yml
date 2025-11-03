@@ -238,12 +238,9 @@ jobs:
   # ============================================================================
   deploy-qa:
     name: "Stage 3B: Deploy Binary to QA"
-    needs: [changes, build]
-    if: |
-      always() &&
-      github.ref == 'refs/heads/develop' &&
-      needs.changes.outputs.cpp == 'true' &&
-      (needs.build.result == 'success')
+    needs: build
+    # Solo ejecuta si build realmente se ejecutó y tuvo éxito
+    if: success()
     runs-on: ubuntu-latest
     environment:
       name: qa
@@ -321,13 +318,9 @@ jobs:
   # ============================================================================
   deploy-staging:
     name: "Stage 4: Deploy to Staging"
-    needs: [changes, build, deploy-qa]
-    if: |
-      always() &&
-      github.ref == 'refs/heads/develop' &&
-      needs.changes.outputs.cpp == 'true' &&
-      needs.build.result == 'success' &&
-      needs.deploy-qa.result == 'success'
+    needs: [build, deploy-qa]
+    # Solo ejecuta si build y deploy-qa tuvieron éxito
+    if: success()
     runs-on: ubuntu-latest
     environment:
       name: staging
