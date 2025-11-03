@@ -176,10 +176,6 @@ jobs:
             dist/olmeraot-linux-x86_64.zip
             dist/SHA256SUMS
 
-          files: |
-            dist/olmeraot-linux-x86_64.zip
-            dist/SHA256SUMS
-
       - name: Run Unit Tests
         run: ctest -V -R unit
 
