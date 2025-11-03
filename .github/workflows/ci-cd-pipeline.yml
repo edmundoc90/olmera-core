@@ -173,10 +173,10 @@ jobs:
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
-    # Environment renombrado para evitar conflicto con branch protection
-    environment:
-      name: qa-scripts
-      url: https://qa.olmeraot.com
+    # Environment removido - misma razón que deploy-qa
+    # environment:
+    #   name: qa-scripts
+    #   url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
         with:
@@ -246,11 +246,14 @@ jobs:
       needs.changes.outputs.cpp == 'true' &&
       needs.build.result == 'success'
     runs-on: ubuntu-latest
-    # NOTA: Environment renombrado a 'qa-binary' para evitar conflicto con
-    # branch protection rules que fuerzan evaluación prematura del job
-    environment:
-      name: qa-binary
-      url: https://qa.olmeraot.com
+    # NOTA: Environment removido porque GitHub Actions fuerza la ejecución del job
+    # cuando existe un environment con deployment branches configuradas, ignorando
+    # completamente las condiciones if. Esto es un comportamiento documentado de
+    # GitHub Actions que no tiene solución alternativa.
+    # Ver: https://github.com/actions/runner/issues/2507
+    # environment:
+    #   name: qa-binary
+    #   url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
       
