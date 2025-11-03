@@ -545,6 +545,9 @@ jobs:
             unzip -o olmeraot.zip
             chmod +x olmeraot
             
+            # Create symlink for config.lua in current/
+            ln -sf ../config.lua current/config.lua
+            
             # Restart server (binary changed)
             echo "Restarting QA server (binary updated)..."
             sudo systemctl restart olmeraot-qa || true
@@ -699,6 +702,9 @@ jobs:
             # Extraer directamente en el path padre
             tar xzf /tmp/scripts.tar.gz
             
+            # Create symlink for config.lua in current/
+            ln -sf ../config.lua current/config.lua
+            
             # Hot-reload con SIGHUP
             pkill -SIGHUP olmeraot || echo "Server not running or signal failed"
             
@@ -811,6 +817,9 @@ jobs:
             
             unzip -o olmeraot.zip
             chmod +x olmeraot
+            
+            # Create symlink for config.lua in current/
+            ln -sf ../config.lua current/config.lua
             
             # Restart production service
             sudo systemctl restart olmeraot-prod
