@@ -4,13 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "src/**"
-      - "tests/**/*.cpp"
   push:
-    paths:
-      - "src/**"
-      - "tests/**/*.cpp"
     branches:
       - develop
       - main
