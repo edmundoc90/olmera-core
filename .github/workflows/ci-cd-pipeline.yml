@@ -238,9 +238,12 @@ jobs:
   # ============================================================================
   deploy-qa:
     name: "Stage 3B: Deploy Binary to QA"
-    needs: build
-    # Solo ejecuta si build realmente se ejecutó exitosamente (no skipped)
-    if: ${{ needs.build.result == 'success' }}
+    needs: [changes, build]
+    # Solo ejecuta si build realmente se ejecutó exitosamente
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      needs.changes.outputs.cpp == 'true' &&
+      needs.build.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: qa
