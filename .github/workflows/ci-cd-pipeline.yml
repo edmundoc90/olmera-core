@@ -548,8 +548,8 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5: Promote to Production"
-    needs: build
-    if: github.ref == 'refs/heads/main' && vars.PROD_DEPLOY_ENABLED == 'true'
+    needs: [build, deploy-qa]
+    if: github.ref == 'refs/heads/main' && vars.PROD_DEPLOY_ENABLED == 'true' && needs.deploy-qa.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: production-server
