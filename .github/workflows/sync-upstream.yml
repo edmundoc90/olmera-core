@@ -1,0 +1,158 @@
+name: Sync with Upstream
+
+on:
+  # Programado para revisar cambios semanalmente
+  schedule:
+    - cron: '0 0 * * MON'  # A las 00:00 UTC cada lunes
+  # Permite ejecutar manualmente
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Branch to sync (default: develop)'
+        required: false
+        default: 'develop'
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Backup overrides
+        run: |
+          mkdir -p /tmp/overrides_backup
+          if [ -d "overrides" ]; then
+            cp -r overrides/* /tmp/overrides_backup/ || true
+            # Generar hash de cada archivo para validación posterior
+            find /tmp/overrides_backup -type f -exec sha256sum {} \; > /tmp/overrides_checksums
+          fi
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/opentibiabr/canary.git || true
+          git remote set-url upstream https://github.com/opentibiabr/canary.git
+          git fetch upstream
+
+      - name: Attempt merge
+        id: merge
+        continue-on-error: true
+        run: |
+          target="${{ github.event.inputs.target_branch || 'develop' }}"
+          git checkout $target
+          git merge upstream/main --no-commit --no-ff
+
+      - name: Validate and restore overrides
+        if: steps.merge.outcome == 'success'
+        id: validate
+        run: |
+          # Restaurar overrides
+          if [ -d "/tmp/overrides_backup" ] && [ "$(ls -A /tmp/overrides_backup)" ]; then
+            cp -r /tmp/overrides_backup/* overrides/
+            
+            # Validar integridad
+            echo "Validando integridad de overrides..."
+            modified_files=""
+            missing_files=""
+            
+            while IFS= read -r line; do
+              checksum=$(echo $line | cut -d' ' -f1)
+              file=$(echo $line | cut -d' ' -f2-)
+              current_file=${file/\/tmp\/overrides_backup/overrides}
+              
+              if [ -f "$current_file" ]; then
+                current_checksum=$(sha256sum "$current_file" | cut -d' ' -f1)
+                if [ "$checksum" != "$current_checksum" ]; then
+                  echo "❌ Archivo modificado: $current_file"
+                  modified_files="$modified_files\n- $current_file"
+                else
+                  echo "✅ Archivo OK: $current_file"
+                fi
+              else
+                echo "⚠️ Archivo no encontrado: $current_file"
+                missing_files="$missing_files\n- $current_file"
+              fi
+            done < /tmp/overrides_checksums
+            
+            echo "modified_files<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$modified_files" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            
+            echo "missing_files<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$missing_files" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changes report
+        if: steps.merge.outcome == 'success'
+        run: |
+          echo "# Sync Report $(date '+%Y-%m-%d')" > sync_report.md
+          echo "" >> sync_report.md
+          echo "## 🔄 Changes from upstream" >> sync_report.md
+          echo '```' >> sync_report.md
+          git diff --name-status HEAD..MERGE_HEAD >> sync_report.md
+          echo '```' >> sync_report.md
+          echo "" >> sync_report.md
+          echo "## 📦 Overrides status" >> sync_report.md
+          if [ -n "${{ steps.validate.outputs.modified_files }}" ]; then
+            echo "⚠️ Some override files were modified:" >> sync_report.md
+            echo "${{ steps.validate.outputs.modified_files }}" >> sync_report.md
+          else
+            echo "✅ All override files preserved correctly" >> sync_report.md
+          fi
+          if [ -n "${{ steps.validate.outputs.missing_files }}" ]; then
+            echo "" >> sync_report.md
+            echo "❌ Some override files are missing:" >> sync_report.md
+            echo "${{ steps.validate.outputs.missing_files }}" >> sync_report.md
+          fi
+
+      - name: Commit merge
+        if: steps.merge.outcome == 'success'
+        run: |
+          git add .
+          git commit -m "chore: sync with upstream $(date '+%Y-%m-%d')"
+
+      - name: Create Pull Request
+        if: steps.merge.outcome == 'success'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: sync with upstream $(date '+%Y-%m-%d')"
+          title: "chore: sync with upstream $(date '+%Y-%m-%d')"
+          body-path: sync_report.md
+          branch: sync/upstream-${{ github.run_number }}
+          labels: upstream-sync,automated
+          delete-branch: true
+
+      - name: Create Issue on Conflict
+        if: steps.merge.outcome == 'failure'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Upstream sync conflict detected',
+              body: `Unable to automatically sync with upstream due to conflicts.
+
+            ## Manual Resolution Required
+            \`\`\`bash
+            git fetch upstream
+            git checkout develop
+            git merge upstream/main
+            # resolve conflicts
+            git add .
+            git commit -m "chore: resolve upstream conflicts"
+            git push
+            \`\`\`
+            
+            Please handle the conflicts manually and update the repository.`,
+              labels: ['upstream-sync', 'conflicts', 'manual-intervention']
+            })

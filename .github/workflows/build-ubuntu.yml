@@ -24,6 +24,29 @@ permissions:
   contents: write  # Necesario para crear/actualizar releases
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.filter.outputs.cpp }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            cpp:
+              - 'src/**'
+              - 'tests/**/*.cpp'
+              - 'cmake/**'
+              - 'CMakeLists.txt'
+              - 'vcpkg.json'
+            scripts:
+              - 'data/**/*.lua'
+              - 'data/**/*.xml'
+              - 'data-canary/**/*.lua'
+              - 'data-canary/**/*.xml'
+
   cancel-runs:
     if: github.event_name == 'pull_request' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -34,7 +57,10 @@ jobs:
           access_token: ${{ github.token }}
 
   job:
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    needs: changes
+    if: |
+      needs.changes.outputs.cpp == 'true' &&
+      (github.event_name == 'push' || !github.event.pull_request.draft)
     name: ${{ matrix.os }}-${{ matrix.buildtype }}
     runs-on: ${{ matrix.os }}
 

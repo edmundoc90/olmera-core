@@ -52,7 +52,17 @@ function reload.onSay(player, words, param)
 	-- create log
 	logCommand(player, "/reload", param)
 
-	local reloadType = reloadTypes[param:lower()]
+	local p = param:match("^%s*(.-)%s*$") -- trim whitespace
+	local numeric = tonumber(p)
+	local reloadType = nil
+
+	if numeric then
+		-- If numeric provided, use it directly. Game.reload will validate the number.
+		reloadType = numeric
+	else
+		reloadType = reloadTypes[p:lower()]
+	end
+
 	if not reloadType then
 		player:sendTextMessage(MESSAGE_EVENT_ADVANCE, "Reload type not found.")
 		return true
@@ -63,7 +73,7 @@ function reload.onSay(player, words, param)
 
 	Game.reload(reloadType)
 
-	player:sendTextMessage(MESSAGE_ADMINISTRATOR, string.format("The server has been reloaded, %s and configurations are now being reloaded.", param:lower()))
+	player:sendTextMessage(MESSAGE_ADMINISTRATOR, string.format("The server has been reloaded, %s and configurations are now being reloaded.", p:lower()))
 	return true
 end
 

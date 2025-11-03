@@ -38,7 +38,7 @@ jobs:
           IFS=/ read -r owner repo <<< "${GITHUB_REPOSITORY}"
           api="https://api.github.com/repos/${owner}/${repo}/releases/tags/qa-latest"
           json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "${api}")"
-          zip_url="$(echo "$json" | jq -r '.assets[] | select(.name=="olmeraot-linux.zip") | .browser_download_url')"
+          zip_url="$(echo "$json" | jq -r '.assets[] | select(.name=="olmeraot-linux-x86_64.zip") | .browser_download_url')"
           sha_url="$(echo "$json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url')"
 
           echo "zip_url=$zip_url" >> "$GITHUB_OUTPUT"
@@ -102,6 +102,14 @@ jobs:
                 unzip -o /tmp/olmeraot.zip -d "${BIN_DIR}"
                 chmod +x "${BIN_PATH}"
                 echo "${REMOTE_SHA}" > "${SHA_MARKER}"
+
+                # Trigger hot-reload in case scripts/items were updated without restarting
+                if command -v systemctl >/dev/null 2>&1; then
+                  sudo systemctl kill -s HUP olmeraot-qa.service || true
+                else
+                  pid=$(pidof olmeraot || true)
+                  [ -n "$pid" ] && kill -HUP $pid || true
+                fi
               fi
             fi
 
