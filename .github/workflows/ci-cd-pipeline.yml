@@ -93,17 +93,6 @@ jobs:
           restore-keys: |
             ccache-ubuntu-22.04
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/vcpkg
-            ${{ github.workspace }}/vcpkg
-            ${{ github.workspace }}/build/vcpkg_installed
-          key: vcpkg-ubuntu-22.04-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-ubuntu-22.04-
-
       - name: Restore artifacts and install vcpkg
         run: |
           vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
@@ -114,6 +103,11 @@ jobs:
         with:
           vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
           vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+          
+      - name: Setup vcpkg binary caching
+        run: |
+          mkdir -p $HOME/.cache/vcpkg/archives
+          echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
 
       - name: Get latest CMake and ninja
         uses: lukka/get-cmake@main
@@ -193,17 +187,6 @@ jobs:
           restore-keys: |
             ccache-ubuntu-22.04
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/vcpkg
-            ${{ github.workspace }}/vcpkg
-            ${{ github.workspace }}/build/vcpkg_installed
-          key: vcpkg-ubuntu-22.04-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-ubuntu-22.04-
-
       - name: Restore artifacts and install vcpkg
         run: |
           vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
@@ -214,6 +197,11 @@ jobs:
         with:
           vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
           vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+          
+      - name: Setup vcpkg binary caching
+        run: |
+          mkdir -p $HOME/.cache/vcpkg/archives
+          echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
 
       - name: Get latest CMake and ninja
         uses: lukka/get-cmake@main
