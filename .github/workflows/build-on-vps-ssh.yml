@@ -61,7 +61,11 @@ jobs:
 
             # Configure and build (linux-release)
             cd "$WORKDIR"
-            cmake -S . -B build/linux-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DTOGGLE_BIN_FOLDER=ON
+            cmake -S . -B build/linux-release -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+              -DTOGGLE_BIN_FOLDER=ON \
+              -DSPEED_UP_BUILD_UNITY=OFF
             cmake --build build/linux-release --config Release -j $(nproc)
 
             # Package artifacts
