@@ -13,8 +13,7 @@ on:
       - "src/**"
       - "tests/**/*.cpp"
     branches:
-      - main
-      - develop
+      - develop  # Solo compila en develop, NO en main
 
 env:
   CMAKE_BUILD_PARALLEL_LEVEL: 2
@@ -112,6 +111,17 @@ jobs:
           restore-keys: |
             ccache-${{ matrix.os }}
 
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/vcpkg
+            ${{ github.workspace }}/vcpkg
+            ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
+
       - name: Restore artifacts and install vcpkg
         id: vcpkg-step
         run: |
@@ -166,16 +176,6 @@ jobs:
             dist/olmeraot-linux-x86_64.zip
             dist/SHA256SUMS
 
-      # Publicar/actualizar release PROD (tag fijo prod-latest) cuando viene de main
-      - name: Publish PROD latest (prod-latest)
-        if: github.ref == 'refs/heads/main' && matrix.os == 'ubuntu-22.04' && matrix.buildtype == 'linux-release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: prod-latest
-          name: PROD Latest
-          body: "Auto-updated from main (${{ github.sha }})."
-          draft: false
-          prerelease: false
           files: |
             dist/olmeraot-linux-x86_64.zip
             dist/SHA256SUMS

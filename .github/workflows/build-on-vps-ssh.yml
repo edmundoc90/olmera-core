@@ -1,14 +1,7 @@
 name: Build on VPS via SSH
 
 on:
-  push:
-    branches: [ develop ]
-    paths:
-      - 'src/**'
-      - 'tests/**/*.cpp'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'vcpkg.json'
+  # Solo manual, para no saturar el VPS con producción
   workflow_dispatch:
 
 permissions:
@@ -66,7 +59,8 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
               -DTOGGLE_BIN_FOLDER=ON \
               -DSPEED_UP_BUILD_UNITY=OFF
-            cmake --build build/linux-release --config Release -j $(nproc)
+            # Limita a 2 cores (50% CPU) para no saturar el VPS
+            cmake --build build/linux-release --config Release -j 2
 
             # Package artifacts
             mkdir -p dist

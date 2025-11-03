@@ -1,0 +1,46 @@
+name: Promote QA to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: Promote qa-latest to prod-latest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download qa-latest assets
+        run: |
+          # Descarga los assets del release qa-latest
+          gh release download qa-latest \
+            --repo ${{ github.repository }} \
+            --pattern "*.zip" \
+            --pattern "SHA256SUMS"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify SHA256
+        run: |
+          sha256sum -c SHA256SUMS
+          echo "✅ SHA256 verification passed"
+
+      - name: Publish/Update prod-latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prod-latest
+          name: Production Latest
+          body: |
+            Promoted from qa-latest after successful QA testing.
+            
+            **Original build:** ${{ github.sha }}
+            **Promoted at:** ${{ github.event.head_commit.timestamp }}
+          draft: false
+          prerelease: false
+          files: |
+            olmeraot-linux-x86_64.zip
+            SHA256SUMS
