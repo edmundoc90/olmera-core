@@ -241,7 +241,8 @@ jobs:
     needs: [changes, build]
     if: |
       github.ref == 'refs/heads/develop' &&
-      needs.changes.outputs.cpp == 'true'
+      needs.changes.outputs.cpp == 'true' &&
+      needs.build.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: qa
