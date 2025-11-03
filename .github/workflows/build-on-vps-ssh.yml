@@ -97,6 +97,9 @@ jobs:
               exit 1
             fi
 
+            # Authenticate gh with token from environment
+            echo "$GH_TOKEN" | gh auth login --with-token
+
             cd dist
             # Create or update qa-latest release (prerelease) and upload assets
             if gh release view qa-latest -R "$REPO" >/dev/null 2>&1; then
