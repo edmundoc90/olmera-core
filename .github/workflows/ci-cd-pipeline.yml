@@ -176,31 +176,29 @@ jobs:
           submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
 
-      - name: Sync scripts to QA Server
+      - name: Upload scripts to QA (scp)
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: |
+            data/**
+            data-canary/**
+            overrides/**
+          target: ${{ secrets.VPS_QA_PATH }}
+
+      - name: Reload QA server (SIGHUP)
         if: vars.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.QA_SSH_HOST }}
-          username: ${{ secrets.QA_SSH_USER }}
-          key: ${{ secrets.QA_SSH_KEY }}
+          # Mapped to existing repository secrets
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            
-            # Clone/pull latest scripts
-            SCRIPTS_DIR=/tmp/olmera-scripts
-            rm -rf "$SCRIPTS_DIR"
-            git clone --depth 1 --branch develop --recurse-submodules \
-              https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
-            
-            # Sync to QA server
-            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/qa/data/
-            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/qa/data-canary/
-            
-            # Sync overrides if they exist
-            if [ -d "$SCRIPTS_DIR/overrides" ]; then
-              rsync -av --delete "$SCRIPTS_DIR/overrides/" /opt/olmeraot/qa/overrides/
-            fi
-            
             # Hot-reload scripts (SIGHUP) en lugar de restart completo
             if command -v systemctl >/dev/null 2>&1; then
               echo "Sending SIGHUP to reload scripts..."
@@ -250,6 +248,9 @@ jobs:
     #   url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
       
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -281,16 +282,32 @@ jobs:
             dist/olmeraot-linux-x86_64.zip
             dist/SHA256SUMS
 
-      - name: Deploy binary + scripts to QA Server
+      - name: Upload scripts to QA (scp)
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: |
+            data/**
+            data-canary/**
+            overrides/**
+          target: ${{ secrets.VPS_QA_PATH }}
+
+      - name: Deploy binary + restart QA Server
         if: vars.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.QA_SSH_HOST }}
-          username: ${{ secrets.QA_SSH_USER }}
-          key: ${{ secrets.QA_SSH_KEY }}
+          # Mapped to existing repository secrets
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            cd /opt/olmeraot/qa
+            DEST_PATH="${{ secrets.VPS_QA_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/qa}
+            cd "$DEST_PATH"
             
             # Download latest QA release binary
             curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -300,13 +317,6 @@ jobs:
             # Extract binary
             unzip -o olmeraot.zip
             chmod +x olmeraot
-            
-            # Sync scripts
-            SCRIPTS_DIR=/tmp/olmera-scripts
-            rm -rf "$SCRIPTS_DIR"
-            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
-            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/qa/data/
-            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/qa/data-canary/
             
             # Restart server (binary changed)
             echo "Restarting QA server (binary updated)..."
@@ -330,6 +340,9 @@ jobs:
       url: https://staging.olmeraot.com
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
       
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -342,13 +355,26 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
 
-      - name: Deploy to Staging Server
+      - name: Upload scripts to Staging (scp)
+        if: vars.STAGING_DEPLOY_ENABLED == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: |
+            data/**
+            data-canary/**
+            overrides/**
+          target: /opt/olmeraot/staging
+
+      - name: Deploy to Staging Server (binary + restart)
         if: vars.STAGING_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.STAGING_SSH_HOST }}
-          username: ${{ secrets.STAGING_SSH_USER }}
-          key: ${{ secrets.STAGING_SSH_KEY }}
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
             cd /opt/olmeraot/staging
@@ -360,13 +386,6 @@ jobs:
             
             unzip -o olmeraot.zip
             chmod +x olmeraot
-            
-            # Sync scripts
-            SCRIPTS_DIR=/tmp/olmera-scripts
-            rm -rf "$SCRIPTS_DIR"
-            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
-            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/staging/data/
-            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/staging/data-canary/
             
             sudo systemctl restart olmeraot-staging || true
 
@@ -424,12 +443,14 @@ jobs:
         if: vars.PROD_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.PROD_SSH_HOST }}
-          username: ${{ secrets.PROD_SSH_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            cd /opt/olmeraot/prod
+            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
+            cd "$DEST_PATH"
             
             # Backup current version
             if [ -f olmeraot ]; then
