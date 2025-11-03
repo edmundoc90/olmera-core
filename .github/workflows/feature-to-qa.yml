@@ -9,6 +9,7 @@ on:
 
 jobs:
   detect-changes:
+    if: startsWith(github.ref, 'refs/heads/feature/') || startsWith(github.ref, 'refs/heads/fix/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       needs_build: ${{ steps.filter.outputs.cxx }}
