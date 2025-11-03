@@ -10,7 +10,9 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
-// Full pipeline test: release + optional debug + deploy to production
+// Full pipeline test: vcpkg binary caching enabled
+
+#include "canary_server.hpp"
 int main() {
 	return inject<CanaryServer>().run();
 }
