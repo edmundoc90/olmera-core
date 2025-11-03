@@ -196,22 +196,24 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Crear tarball de los directorios
-          tar czf /tmp/scripts.tar.gz data data-canary overrides
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary overrides
           
           # Configurar SSH key
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           
-          # Copiar y extraer directamente en current/
+          # Copiar y extraer en el path padre
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
           
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "cd ${{ secrets.VPS_QA_PATH }}/current && tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
+            "cd ${{ secrets.VPS_QA_PATH }} && tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
@@ -326,22 +328,24 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Crear tarball de los directorios
-          tar czf /tmp/scripts.tar.gz data data-canary overrides
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary overrides
           
           # Configurar SSH key
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           
-          # Copiar y extraer directamente en current/
+          # Copiar y extraer en el path padre
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
           
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "cd ${{ secrets.VPS_QA_PATH }}/current && tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
+            "cd ${{ secrets.VPS_QA_PATH }} && tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
