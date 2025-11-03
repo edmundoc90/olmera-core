@@ -245,9 +245,10 @@ jobs:
       needs.changes.outputs.cpp == 'true' &&
       needs.build.result == 'success'
     runs-on: ubuntu-latest
-    environment:
-      name: qa
-      url: https://qa.olmeraot.com
+    # NOTA: Environment deshabilitado hasta que se cree manualmente en GitHub
+    # environment:
+    #   name: qa
+    #   url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
       
