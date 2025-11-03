@@ -50,6 +50,7 @@ jobs:
               - 'data-canary/**/*.lua'
               - 'data-canary/**/*.xml'
             overrides:
+              - 'overrides'
               - 'overrides/**'
 
   # ============================================================================
