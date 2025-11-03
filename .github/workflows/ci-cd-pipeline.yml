@@ -347,6 +347,9 @@ jobs:
       !cancelled() &&
       (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     environment:
       name: approve-production
       url: https://github.com/${{ github.repository }}/compare/main...develop
@@ -356,16 +359,40 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || github.token }}
 
-      - name: Merge develop to main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git checkout main
-          git merge --no-ff develop -m "chore: promote develop to main [skip ci]"
-          git push origin main
+      - name: Create or update PR develop → main
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const base = 'main';
+            const head = `${owner}:develop`;
+            // Find existing open PR
+            const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', base, head });
+            let pr = prs[0];
+            if (!pr) {
+              pr = (await github.rest.pulls.create({ owner, repo, base, head: 'develop', title: 'Promote develop to main', body: 'Auto-created after QA approval' })).data;
+            }
+            core.setOutput('number', pr.number.toString());
+            core.setOutput('node_id', pr.node_id);
+            core.setOutput('html_url', pr.html_url);
 
-      - name: Comment on commit
+      - name: Enable auto-merge (squash) when checks pass
+        if: steps.pr.outputs.node_id
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const nodeId = '${{ steps.pr.outputs.node_id }}';
+            const mutation = `mutation($pullRequestId: ID!) {\n  enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }) {\n    clientMutationId\n  }\n}`;
+            try {
+              await github.graphql(mutation, { pullRequestId: nodeId });
+              core.info('✅ Auto-merge enabled. The PR will merge when checks pass.');
+            } catch (e) {
+              core.warning(`Could not enable auto-merge: ${e.message}`);
+            }
+
+      - name: Add comment with PR link
         uses: actions/github-script@v7
         with:
           script: |
@@ -373,7 +400,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               commit_sha: context.sha,
-              body: `✅ Approved and merged to main. Production deployment will start automatically.`
+              body: `✅ PR creado: ${{ steps.pr.outputs.html_url }}. Se auto-mergeará cuando los checks pasen (si auto-merge está habilitado en el repo).`
             });
 
   # ============================================================================
