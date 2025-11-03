@@ -368,6 +368,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     environment:
       name: approve-production
       url: https://github.com/${{ github.repository }}/compare/main...develop
@@ -395,6 +396,36 @@ jobs:
             core.setOutput('number', pr.number.toString());
             core.setOutput('node_id', pr.node_id);
             core.setOutput('html_url', pr.html_url);
+
+      - name: Request review from maintainer
+        if: steps.pr.outputs.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = Number('${{ steps.pr.outputs.number }}');
+            try {
+              await github.rest.pulls.requestReviewers({ owner, repo, pull_number: number, reviewers: ['edmundoc90'] });
+              core.info('✅ Requested review from edmundoc90');
+            } catch (e) {
+              core.warning(`Could not request reviewer: ${e.message}`);
+            }
+
+      - name: Add label to PR
+        if: steps.pr.outputs.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = Number('${{ steps.pr.outputs.number }}');
+            try {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['prod-promotion'] });
+              core.info('🏷️  Label added to PR');
+            } catch (e) {
+              core.warning(`Could not add label: ${e.message}`);
+            }
 
       - name: Enable auto-merge (squash) when checks pass
         if: steps.pr.outputs.node_id
