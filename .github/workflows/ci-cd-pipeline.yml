@@ -197,10 +197,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: |
-            data/**
-            data-canary/**
-            overrides/**
-          target: ${{ secrets.VPS_QA_PATH }}
+            data/,data-canary/,overrides/
+          target: ${{ secrets.VPS_QA_PATH }}/current/
+          strip_components: 0
+          overwrite: true
+          rm: false
 
       - name: Reload QA server (SIGHUP)
         if: vars.QA_DEPLOY_ENABLED == 'true'
@@ -316,10 +317,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: |
-            data/**
-            data-canary/**
-            overrides/**
-          target: ${{ secrets.VPS_QA_PATH }}
+            data/,data-canary/,overrides/
+          target: ${{ secrets.VPS_QA_PATH }}/current/
+          strip_components: 0
+          overwrite: true
+          rm: false
 
       - name: Deploy binary + restart QA Server
         if: vars.QA_DEPLOY_ENABLED == 'true'
@@ -402,10 +404,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: |
-            data/**
-            data-canary/**
-            overrides/**
-          target: /opt/olmeraot/staging
+            data/,data-canary/,overrides/
+          target: /opt/olmeraot/staging/current/
+          strip_components: 0
+          overwrite: true
+          rm: false
 
       - name: Deploy to Staging Server (binary + restart)
         if: vars.STAGING_DEPLOY_ENABLED == 'true'
