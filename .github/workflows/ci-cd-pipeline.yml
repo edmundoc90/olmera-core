@@ -451,4 +451,3 @@ jobs:
             # Health check
             sleep 5
             sudo systemctl status olmeraot-prod
-# Test with classic token
