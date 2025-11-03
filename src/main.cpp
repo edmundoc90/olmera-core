@@ -10,7 +10,7 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
-// Full pipeline test: vcpkg binary caching enabled
+// Test: QA required before prod deployment
 
 #include "canary_server.hpp"
 int main() {
