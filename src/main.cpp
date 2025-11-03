@@ -10,7 +10,7 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
-// Pipeline test: full deployment flow to production
+// Full pipeline test: release + optional debug + deploy to production
 int main() {
 	return inject<CanaryServer>().run();
 }
