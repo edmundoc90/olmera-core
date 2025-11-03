@@ -1,15 +1,10 @@
-name: Build on VPS (Self-Hosted)
+name: Build on VPS (Self-Hosted) [DISABLED]
 
-on:
-  push:
-    branches: [ develop ]
-    paths:
-      - 'src/**'
-      - 'tests/**/*.cpp'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'vcpkg.json'
-  workflow_dispatch:
+on: {}
+
+# NOTE: This legacy self-hosted workflow has been disabled in favor of the unified CI/CD pipeline
+# defined in `.github/workflows/ci-cd-pipeline.yml`. It remains in the repo for reference only.
+# You can safely delete this file once you confirm it's no longer needed.
 
 permissions:
   contents: write
