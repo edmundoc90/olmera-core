@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        buildtype: [linux-release, linux-debug]
+        buildtype: [linux-release]
     outputs:
       artifact_name: ${{ steps.artifact.outputs.name }}
     steps:
@@ -154,6 +154,98 @@ jobs:
           name: ${{ steps.artifact.outputs.name }}
           path: dist/
           retention-days: 30
+
+  # ============================================================================
+  # STAGE 2B: Build Debug (manual approval required)
+  # ============================================================================
+  build-debug:
+    name: "Stage 2B: Build Debug (Manual)"
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-22.04
+    environment:
+      name: debug-build
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache linux-headers-"$(uname -r)"
+
+      - name: Switch to gcc-13
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-12
+          sudo update-alternatives --set gcc /usr/bin/gcc-13
+
+      - name: CCache
+        uses: hendrikmuhs/ccache-action@main
+        with:
+          max-size: "1G"
+          key: ccache-ubuntu-22.04-linux-debug
+          restore-keys: |
+            ccache-ubuntu-22.04
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/vcpkg
+            ${{ github.workspace }}/vcpkg
+            ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-ubuntu-22.04-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-ubuntu-22.04-
+
+      - name: Restore artifacts and install vcpkg
+        run: |
+          vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
+          echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
+
+      - name: Get vcpkg
+        uses: lukka/run-vcpkg@main
+        with:
+          vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
+          vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+
+      - name: Get latest CMake and ninja
+        uses: lukka/get-cmake@main
+
+      - name: Run CMake
+        uses: lukka/run-cmake@main
+        with:
+          configurePresetAdditionalArgs: "['-DTOGGLE_BIN_FOLDER=ON']"
+          configurePreset: linux-debug
+          buildPreset: linux-debug
+
+      - name: Run Unit Tests
+        run: ctest -V -R unit
+
+      - name: Run Integration Tests
+        run: ctest -V -R integration
+
+      - name: Package debug binary
+        run: |
+          mkdir -p dist
+          cp build/linux-debug/bin/olmeraot dist/olmeraot-debug
+          cd dist
+          zip -r olmeraot-linux-x86_64-debug.zip olmeraot-debug
+          sha256sum olmeraot-linux-x86_64-debug.zip > SHA256SUMS-debug
+          ls -lh
+
+      - name: Upload debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: olmeraot-debug-${{ github.sha }}
+          path: dist/
+          retention-days: 7
 
   # ============================================================================
   # STAGE 3A: Sync Scripts to QA (solo scripts, sin build)
