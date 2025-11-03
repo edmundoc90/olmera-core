@@ -6,3 +6,4 @@ dofile(CORE_DIRECTORY .. "/libs/libs.lua")
 dofile(CORE_DIRECTORY .. "/stages.lua")
 
 -- ci: trigger sync-scripts-qa to validate Stage 4A approval
+-- ci: mixed-change test (scripts)
