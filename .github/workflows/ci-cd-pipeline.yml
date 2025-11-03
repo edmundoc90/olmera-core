@@ -199,7 +199,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "data,data-canary,overrides"
-          target: ${{ secrets.VPS_QA_PATH }}/current/
+          target: ${{ secrets.VPS_QA_PATH }}/current
           overwrite: true
           rm: false
 
@@ -317,7 +317,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "data,data-canary,overrides"
-          target: ${{ secrets.VPS_QA_PATH }}/current/
+          target: ${{ secrets.VPS_QA_PATH }}/current
           overwrite: true
           rm: false
 
