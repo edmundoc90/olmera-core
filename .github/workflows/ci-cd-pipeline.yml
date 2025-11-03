@@ -177,7 +177,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Prepare SSH known_hosts (QA)
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -190,7 +190,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Upload scripts to QA (scp)
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -202,7 +202,7 @@ jobs:
           rm: false
 
       - name: Reload QA server (SIGHUP)
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
         uses: appleboy/ssh-action@v1.2.0
         with:
           # Mapped to existing repository secrets
@@ -223,7 +223,7 @@ jobs:
             echo "✅ Scripts synced and reloaded without server restart"
 
       - name: Comment on commit
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
         uses: actions/github-script@v7
         with:
           script: |
