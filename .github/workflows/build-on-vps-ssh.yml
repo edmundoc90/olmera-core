@@ -34,6 +34,7 @@ jobs:
           host: ${{ secrets.BUILD_SSH_HOST }}
           username: ${{ secrets.BUILD_SSH_USER }}
           key: ${{ secrets.BUILD_SSH_KEY }}
+          envs: REPO,SHA
           script_stop: true
           script: |
             set -euo pipefail
