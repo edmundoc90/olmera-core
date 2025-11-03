@@ -32,8 +32,13 @@ jobs:
     outputs:
       cpp: ${{ steps.filter.outputs.cpp }}
       scripts: ${{ steps.filter.outputs.scripts }}
+      overrides: ${{ steps.filter.outputs.overrides }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 2
+      
       - uses: dorny/paths-filter@v2
         id: filter
         with:
@@ -49,6 +54,10 @@ jobs:
               - 'data/**/*.xml'
               - 'data-canary/**/*.lua'
               - 'data-canary/**/*.xml'
+            overrides:
+              - 'overrides/**/*.lua'
+              - 'overrides/**/*.xml'
+              - 'overrides/configs/**'
 
   # ============================================================================
   # STAGE 2: Build & Test
@@ -62,6 +71,8 @@ jobs:
       fail-fast: false
       matrix:
         buildtype: [linux-release, linux-debug]
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -138,11 +149,16 @@ jobs:
           sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS
           ls -lh
 
+      - name: Set artifact name
+        if: matrix.buildtype == 'linux-release'
+        id: artifact
+        run: echo "name=olmeraot-build-${{ github.sha }}" >> $GITHUB_OUTPUT
+
       - name: Upload artifact
         if: matrix.buildtype == 'linux-release'
         uses: actions/upload-artifact@v4
         with:
-          name: olmeraot-build-${{ github.sha }}
+          name: ${{ steps.artifact.outputs.name }}
           path: dist/
           retention-days: 30
 
@@ -154,7 +170,7 @@ jobs:
     needs: changes
     if: |
       github.ref == 'refs/heads/develop' &&
-      needs.changes.outputs.scripts == 'true' &&
+      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
     environment:
@@ -162,6 +178,8 @@ jobs:
       url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Sync scripts to QA Server
         if: vars.QA_DEPLOY_ENABLED == 'true'
@@ -176,11 +194,17 @@ jobs:
             # Clone/pull latest scripts
             SCRIPTS_DIR=/tmp/olmera-scripts
             rm -rf "$SCRIPTS_DIR"
-            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
+            git clone --depth 1 --branch develop --recurse-submodules \
+              https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
             
             # Sync to QA server
             rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/qa/data/
             rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/qa/data-canary/
+            
+            # Sync overrides if they exist
+            if [ -d "$SCRIPTS_DIR/overrides" ]; then
+              rsync -av --delete "$SCRIPTS_DIR/overrides/" /opt/olmeraot/qa/overrides/
+            fi
             
             # Hot-reload scripts (SIGHUP) en lugar de restart completo
             if command -v systemctl >/dev/null 2>&1; then
@@ -198,11 +222,15 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const changes = [];
+            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('data scripts');
+            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
+            
             github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               commit_sha: context.sha,
-              body: '✅ Scripts synced to QA without recompiling/restarting server'
+              body: `✅ Synced ${changes.join(' + ')} to QA without recompiling/restarting server`
             })
 
   # ============================================================================
@@ -224,7 +252,7 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: olmeraot-build-${{ github.sha }}
+          name: ${{ needs.build.outputs.artifact_name }}
           path: dist/
 
       - name: Publish qa-latest release
@@ -291,7 +319,7 @@ jobs:
   # ============================================================================
   deploy-staging:
     name: "Stage 4: Deploy to Staging"
-    needs: [changes, deploy-qa]
+    needs: [changes, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/develop' &&
       needs.changes.outputs.cpp == 'true'
@@ -305,7 +333,7 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: olmeraot-build-${{ github.sha }}
+          name: ${{ needs.build.outputs.artifact_name }}
           path: dist/
 
       - name: Verify checksums
