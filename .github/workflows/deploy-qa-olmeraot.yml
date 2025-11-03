@@ -28,6 +28,7 @@ jobs:
       # NUEVO: Resolver los assets del release qa-latest
       - name: Resolve QA asset URLs (qa-latest)
         id: resolve
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -37,15 +38,30 @@ jobs:
           fi
           IFS=/ read -r owner repo <<< "${GITHUB_REPOSITORY}"
           api="https://api.github.com/repos/${owner}/${repo}/releases/tags/qa-latest"
-          json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "${api}")"
+          
+          # Verificar si el release existe
+          if ! json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "${api}" 2>/dev/null)"; then
+            echo "::warning::Release qa-latest not found. Skipping deployment."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
           zip_url="$(echo "$json" | jq -r '.assets[] | select(.name=="olmeraot-linux-x86_64.zip") | .browser_download_url')"
           sha_url="$(echo "$json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url')"
 
+          if [ -z "$zip_url" ] || [ -z "$sha_url" ]; then
+            echo "::warning::Required assets not found in qa-latest release. Skipping deployment."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "release_exists=true" >> "$GITHUB_OUTPUT"
           echo "zip_url=$zip_url" >> "$GITHUB_OUTPUT"
           echo "sha_url=$sha_url" >> "$GITHUB_OUTPUT"
 
       # SSH + deploy usando variables (si existen) o lo resuelto por el paso anterior
       - name: SSH into VPS and deploy develop
+        if: steps.resolve.outputs.release_exists == 'true' || vars.CORE_ZIP_URL_QA
         uses: appleboy/ssh-action@v1.2.0
         env:
           CORE_ZIP_URL_QA: ${{ vars.CORE_ZIP_URL_QA || steps.resolve.outputs.zip_url }}
