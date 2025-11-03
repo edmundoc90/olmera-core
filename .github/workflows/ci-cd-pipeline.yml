@@ -196,10 +196,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: |
-            data/,data-canary/,overrides/
+          source: "data,data-canary,overrides"
           target: ${{ secrets.VPS_QA_PATH }}/current/
-          strip_components: 0
           overwrite: true
           rm: false
 
@@ -316,10 +314,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: |
-            data/,data-canary/,overrides/
+          source: "data,data-canary,overrides"
           target: ${{ secrets.VPS_QA_PATH }}/current/
-          strip_components: 0
           overwrite: true
           rm: false
 
@@ -403,10 +399,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: |
-            data/,data-canary/,overrides/
+          source: "data,data-canary,overrides"
           target: /opt/olmeraot/staging/current/
-          strip_components: 0
           overwrite: true
           rm: false
 
