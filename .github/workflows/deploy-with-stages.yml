@@ -1,0 +1,98 @@
+name: Deploy with Approval Stages
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Stage 1: Build
+  build:
+    name: Build Application
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build binary
+        run: |
+          echo "Building..."
+          # Aquí irían los pasos de build reales
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: olmeraot-build
+          path: dist/
+          retention-days: 7
+
+  # Stage 2: Deploy to QA (automático en develop)
+  deploy-qa:
+    name: Deploy to QA
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-22.04
+    environment:
+      name: qa
+      url: https://qa.olmeraot.com
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: olmeraot-build
+          path: dist/
+      
+      - name: Deploy to QA server
+        run: |
+          echo "Deploying to QA..."
+          # Aquí SSH o lo que uses para deployar a QA
+
+  # Stage 3: Deploy to Staging (requiere aprobación manual)
+  deploy-staging:
+    name: Deploy to Staging
+    needs: deploy-qa
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-22.04
+    environment:
+      name: staging
+      url: https://staging.olmeraot.com
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: olmeraot-build
+          path: dist/
+      
+      - name: Deploy to Staging
+        run: |
+          echo "Deploying to Staging..."
+          # Deploy a staging
+
+  # Stage 4: Deploy to Production (requiere aprobación manual)
+  deploy-production:
+    name: Deploy to Production
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+      url: https://olmeraot.com
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: olmeraot-build
+          path: dist/
+      
+      - name: Deploy to Production
+        run: |
+          echo "Deploying to Production..."
+          # Deploy a producción
+      
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prod-latest
+          files: dist/*

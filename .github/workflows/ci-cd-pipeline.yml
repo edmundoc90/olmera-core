@@ -1,0 +1,423 @@
+name: CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "tests/**/*.cpp"
+  push:
+    paths:
+      - "src/**"
+      - "tests/**/*.cpp"
+    branches:
+      - develop
+      - main
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  MAKEFLAGS: "-j 2"
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # STAGE 1: Detección de cambios
+  # ============================================================================
+  changes:
+    name: "Stage 1: Detect Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.filter.outputs.cpp }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            cpp:
+              - 'src/**'
+              - 'tests/**/*.cpp'
+              - 'cmake/**'
+              - 'CMakeLists.txt'
+              - 'vcpkg.json'
+            scripts:
+              - 'data/**/*.lua'
+              - 'data/**/*.xml'
+              - 'data-canary/**/*.lua'
+              - 'data-canary/**/*.xml'
+
+  # ============================================================================
+  # STAGE 2: Build & Test
+  # ============================================================================
+  build:
+    name: "Stage 2: Build & Test"
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        buildtype: [linux-release, linux-debug]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache linux-headers-"$(uname -r)"
+
+      - name: Switch to gcc-13
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-12
+          sudo update-alternatives --set gcc /usr/bin/gcc-13
+
+      - name: CCache
+        uses: hendrikmuhs/ccache-action@main
+        with:
+          max-size: "1G"
+          key: ccache-ubuntu-22.04-${{ matrix.buildtype }}
+          restore-keys: |
+            ccache-ubuntu-22.04
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/vcpkg
+            ${{ github.workspace }}/vcpkg
+            ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-ubuntu-22.04-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-ubuntu-22.04-
+
+      - name: Restore artifacts and install vcpkg
+        run: |
+          vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
+          echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
+
+      - name: Get vcpkg
+        uses: lukka/run-vcpkg@main
+        with:
+          vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
+          vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+
+      - name: Get latest CMake and ninja
+        uses: lukka/get-cmake@main
+
+      - name: Run CMake
+        uses: lukka/run-cmake@main
+        with:
+          configurePresetAdditionalArgs: "['-DTOGGLE_BIN_FOLDER=ON']"
+          configurePreset: ${{ matrix.buildtype }}
+          buildPreset: ${{ matrix.buildtype }}
+
+      - name: Run Unit Tests
+        run: ctest -V -R unit
+
+      - name: Run Integration Tests
+        run: ctest -V -R integration
+
+      # Solo empaquetar para linux-release
+      - name: Package binary
+        if: matrix.buildtype == 'linux-release'
+        run: |
+          mkdir -p dist
+          cp build/linux-release/bin/olmeraot dist/olmeraot
+          cd dist
+          zip -r olmeraot-linux-x86_64.zip olmeraot
+          sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS
+          ls -lh
+
+      - name: Upload artifact
+        if: matrix.buildtype == 'linux-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: olmeraot-build-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # ============================================================================
+  # STAGE 3A: Sync Scripts to QA (solo scripts, sin build)
+  # ============================================================================
+  sync-scripts-qa:
+    name: "Stage 3A: Sync Scripts to QA"
+    needs: changes
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      needs.changes.outputs.scripts == 'true' &&
+      needs.changes.outputs.cpp != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa-scripts
+      url: https://qa.olmeraot.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync scripts to QA Server
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.QA_SSH_HOST }}
+          username: ${{ secrets.QA_SSH_USER }}
+          key: ${{ secrets.QA_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            
+            # Clone/pull latest scripts
+            SCRIPTS_DIR=/tmp/olmera-scripts
+            rm -rf "$SCRIPTS_DIR"
+            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
+            
+            # Sync to QA server
+            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/qa/data/
+            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/qa/data-canary/
+            
+            # Hot-reload scripts (SIGHUP) en lugar de restart completo
+            if command -v systemctl >/dev/null 2>&1; then
+              echo "Sending SIGHUP to reload scripts..."
+              sudo systemctl kill -s HUP olmeraot-qa.service || true
+            else
+              pid=$(pidof olmeraot || true)
+              [ -n "$pid" ] && kill -HUP "$pid" || true
+            fi
+            
+            echo "✅ Scripts synced and reloaded without server restart"
+
+      - name: Comment on commit
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: '✅ Scripts synced to QA without recompiling/restarting server'
+            })
+
+  # ============================================================================
+  # STAGE 3B: Deploy Binary to QA (con build)
+  # ============================================================================
+  deploy-qa:
+    name: "Stage 3B: Deploy Binary to QA"
+    needs: [changes, build]
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://qa.olmeraot.com
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: olmeraot-build-${{ github.sha }}
+          path: dist/
+
+      - name: Publish qa-latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: qa-latest
+          name: QA Latest
+          body: |
+            🚀 **QA Release**
+            
+            **Branch:** develop
+            **Commit:** ${{ github.sha }}
+            **Built at:** ${{ github.event.head_commit.timestamp }}
+            
+            **Changes:**
+            - C++ Code: ${{ needs.changes.outputs.cpp == 'true' && '✅' || '➖' }}
+            - Scripts: ${{ needs.changes.outputs.scripts == 'true' && '✅' || '➖' }}
+            
+            ---
+            Auto-deployed to QA environment.
+          draft: false
+          prerelease: true
+          files: |
+            dist/olmeraot-linux-x86_64.zip
+            dist/SHA256SUMS
+
+      - name: Deploy binary + scripts to QA Server
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.QA_SSH_HOST }}
+          username: ${{ secrets.QA_SSH_USER }}
+          key: ${{ secrets.QA_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/olmeraot/qa
+            
+            # Download latest QA release binary
+            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -o olmeraot.zip \
+              "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
+            
+            # Extract binary
+            unzip -o olmeraot.zip
+            chmod +x olmeraot
+            
+            # Sync scripts
+            SCRIPTS_DIR=/tmp/olmera-scripts
+            rm -rf "$SCRIPTS_DIR"
+            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
+            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/qa/data/
+            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/qa/data-canary/
+            
+            # Restart server (binary changed)
+            echo "Restarting QA server (binary updated)..."
+            sudo systemctl restart olmeraot-qa || true
+            
+            # Health check
+            sleep 3
+            sudo systemctl status olmeraot-qa --no-pager || true
+
+  # ============================================================================
+  # STAGE 4: Deploy to Staging (requiere aprobación manual)
+  # ============================================================================
+  deploy-staging:
+    name: "Stage 4: Deploy to Staging"
+    needs: [changes, deploy-qa]
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.olmeraot.com
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: olmeraot-build-${{ github.sha }}
+          path: dist/
+
+      - name: Verify checksums
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+
+      - name: Deploy to Staging Server
+        if: vars.STAGING_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/olmeraot/staging
+            
+            # Download from QA release
+            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -o olmeraot.zip \
+              "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
+            
+            unzip -o olmeraot.zip
+            chmod +x olmeraot
+            
+            # Sync scripts
+            SCRIPTS_DIR=/tmp/olmera-scripts
+            rm -rf "$SCRIPTS_DIR"
+            git clone --depth 1 --branch develop https://github.com/${{ github.repository }}.git "$SCRIPTS_DIR"
+            rsync -av --delete "$SCRIPTS_DIR/data/" /opt/olmeraot/staging/data/
+            rsync -av --delete "$SCRIPTS_DIR/data-canary/" /opt/olmeraot/staging/data-canary/
+            
+            sudo systemctl restart olmeraot-staging || true
+
+  # ============================================================================
+  # STAGE 5: Promote to Production (solo en main, requiere aprobación)
+  # ============================================================================
+  promote-production:
+    name: "Stage 5: Promote to Production"
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://olmeraot.com
+    steps:
+      - name: Download qa-latest release assets
+        run: |
+          # Descargar desde qa-latest (ya probado en QA)
+          curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -o olmeraot-linux-x86_64.zip \
+            "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
+          
+          curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -o SHA256SUMS \
+            "https://github.com/${{ github.repository }}/releases/download/qa-latest/SHA256SUMS"
+
+      - name: Verify SHA256
+        run: |
+          sha256sum -c SHA256SUMS
+          echo "✅ SHA256 verification passed"
+
+      - name: Publish prod-latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prod-latest
+          name: Production Latest
+          body: |
+            🎯 **Production Release**
+            
+            Promoted from `qa-latest` after successful testing.
+            
+            **Original build:** ${{ github.sha }}
+            **Promoted at:** ${{ github.event.head_commit.timestamp }}
+            **Branch:** main
+            
+            ---
+            ⚠️ This build was NOT recompiled - promoted from QA for consistency.
+          draft: false
+          prerelease: false
+          files: |
+            olmeraot-linux-x86_64.zip
+            SHA256SUMS
+
+      - name: Deploy to Production Server
+        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/olmeraot/prod
+            
+            # Backup current version
+            if [ -f olmeraot ]; then
+              cp olmeraot "olmeraot.backup.$(date +%Y%m%d_%H%M%S)"
+            fi
+            
+            # Download prod-latest
+            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -o olmeraot.zip \
+              "https://github.com/${{ github.repository }}/releases/download/prod-latest/olmeraot-linux-x86_64.zip"
+            
+            unzip -o olmeraot.zip
+            chmod +x olmeraot
+            
+            # Restart production service
+            sudo systemctl restart olmeraot-prod
+            
+            # Health check
+            sleep 5
+            sudo systemctl status olmeraot-prod
