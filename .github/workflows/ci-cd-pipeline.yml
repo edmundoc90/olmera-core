@@ -239,8 +239,8 @@ jobs:
   deploy-qa:
     name: "Stage 3B: Deploy Binary to QA"
     needs: build
-    # Solo ejecuta si build realmente se ejecutó y tuvo éxito
-    if: success()
+    # Solo ejecuta si build realmente se ejecutó exitosamente (no skipped)
+    if: ${{ needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: qa
@@ -319,8 +319,8 @@ jobs:
   deploy-staging:
     name: "Stage 4: Deploy to Staging"
     needs: [build, deploy-qa]
-    # Solo ejecuta si build y deploy-qa tuvieron éxito
-    if: success()
+    # Solo ejecuta si build y deploy-qa tuvieron éxito (no skipped)
+    if: ${{ needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: staging
