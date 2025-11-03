@@ -35,6 +35,7 @@ jobs:
           username: ${{ secrets.BUILD_SSH_USER }}
           key: ${{ secrets.BUILD_SSH_KEY }}
           envs: REPO,SHA
+          command_timeout: 60m
           script_stop: true
           script: |
             set -euo pipefail
