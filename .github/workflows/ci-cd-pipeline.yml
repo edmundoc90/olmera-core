@@ -337,6 +337,46 @@ jobs:
             });
 
   # ============================================================================
+  # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
+  # ============================================================================
+  approve-merge-to-main:
+    name: "Stage 4A: Approve Merge to Main"
+    needs: [changes, sync-scripts-qa, deploy-qa]
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      !cancelled() &&
+      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success')
+    runs-on: ubuntu-latest
+    environment:
+      name: approve-production
+      url: https://github.com/${{ github.repository }}/compare/main...develop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Merge develop to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git checkout main
+          git merge --no-ff develop -m "chore: promote develop to main [skip ci]"
+          git push origin main
+
+      - name: Comment on commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: `✅ Approved and merged to main. Production deployment will start automatically.`
+            });
+
+  # ============================================================================
   # STAGE 3B: Deploy Binary to QA (con build)
   # ============================================================================
   deploy-qa:
@@ -544,12 +584,107 @@ jobs:
             sudo systemctl restart olmeraot-staging || true
 
   # ============================================================================
-  # STAGE 5: Promote to Production (solo en main, requiere aprobación)
+  # STAGE 5A: Sync Scripts to Production (scripts-only, sin rebuild)
+  # ============================================================================
+  sync-scripts-prod:
+    name: "Stage 5A: Sync Scripts to Production"
+    needs: changes
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
+      needs.changes.outputs.cpp != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production-server
+      url: https://olmeraot.com
+    env:
+      PROD_DEPLOY_ENABLED: ${{ vars.PROD_DEPLOY_ENABLED || secrets.PROD_DEPLOY_ENABLED }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Prepare SSH known_hosts (Prod)
+        if: env.PROD_DEPLOY_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload scripts to Production (tar + SSH)
+        if: env.PROD_DEPLOY_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary overrides
+          
+          # Transferir a producción
+          scp -o StrictHostKeyChecking=yes \
+            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+            /tmp/scripts.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+
+      - name: Extract and reload (SIGHUP)
+        if: env.PROD_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
+            
+            cd "$DEST_PATH"
+            
+            # Limpiar directorios actuales antes de extraer
+            rm -rf current/data current/data-canary current/overrides
+            
+            # Extraer directamente en el path padre
+            tar xzf /tmp/scripts.tar.gz
+            
+            # Hot-reload con SIGHUP
+            pkill -SIGHUP olmeraot || echo "Server not running or signal failed"
+            
+            echo "✅ Scripts synced to production and server reloaded"
+
+      - name: Comment on commit
+        if: env.PROD_DEPLOY_ENABLED == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const changes = [];
+            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: `✅ Synced ${changes.join(' + ')} to Production without recompiling/restarting server`
+            });
+
+  # ============================================================================
+  # STAGE 5B: Promote Binary to Production (solo en main, requiere aprobación)
   # ============================================================================
   promote-production:
-    name: "Stage 5: Promote to Production"
+    name: "Stage 5B: Promote Binary to Production"
     needs: [build, deploy-qa]
-    if: github.ref == 'refs/heads/main' && vars.PROD_DEPLOY_ENABLED == 'true' && needs.deploy-qa.result == 'success'
+    if: |
+      github.ref == 'refs/heads/main' && 
+      vars.PROD_DEPLOY_ENABLED == 'true' && 
+      (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
+      !cancelled()
     runs-on: ubuntu-latest
     environment:
       name: production-server
