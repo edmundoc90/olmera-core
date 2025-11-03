@@ -176,6 +176,19 @@ jobs:
           submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
 
+      - name: Prepare SSH known_hosts (QA)
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
       - name: Upload scripts to QA (scp)
         if: vars.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -252,6 +265,19 @@ jobs:
           submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
       
+      - name: Prepare SSH known_hosts (QA)
+        if: vars.QA_DEPLOY_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
@@ -333,7 +359,7 @@ jobs:
     name: "Stage 4: Deploy to Staging"
     needs: [build, deploy-qa]
     # Solo ejecuta si build y deploy-qa tuvieron éxito (no skipped)
-    if: ${{ needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
+    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: staging-server
@@ -354,6 +380,19 @@ jobs:
         run: |
           cd dist
           sha256sum -c SHA256SUMS
+
+      - name: Prepare SSH known_hosts (Staging)
+        if: vars.STAGING_DEPLOY_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Upload scripts to Staging (scp)
         if: vars.STAGING_DEPLOY_ENABLED == 'true'
@@ -395,7 +434,7 @@ jobs:
   promote-production:
     name: "Stage 5: Promote to Production"
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: production-server
@@ -438,6 +477,19 @@ jobs:
           files: |
             olmeraot-linux-x86_64.zip
             SHA256SUMS
+
+      - name: Prepare SSH known_hosts (Prod)
+        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy to Production Server
         if: vars.PROD_DEPLOY_ENABLED == 'true'
