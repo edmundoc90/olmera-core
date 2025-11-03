@@ -1,0 +1,87 @@
+name: Sync Scripts to QA
+
+on:
+  pull_request:
+    paths:
+      - "data/**/*.lua"
+      - "data/**/*.xml"
+      - "data/**/*.json"
+  push:
+    paths:
+      - "data/**/*.lua"
+      - "data/**/*.xml"
+      - "data/**/*.json"
+    branches:
+      - develop
+
+concurrency:
+  group: sync-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 luarocks
+          sudo luarocks install luacheck
+      
+      - name: Validate Lua Syntax
+        run: |
+          find data/ -name "*.lua" -exec luacheck {} +
+      
+      - name: Validate XML
+        run: |
+          find data/ -name "*.xml" -exec xmllint --noout {} +
+
+  sync-to-qa:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+            chmod 644 ~/.ssh/known_hosts
+          fi
+
+      - name: Sync to QA
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            echo "[QA] Sync scripts en ${{ secrets.VPS_QA_PATH }}"
+            cd "${{ secrets.VPS_QA_PATH }}"
+            
+            echo "[QA] Fetch y reset a develop"
+            git fetch origin develop
+            git checkout develop
+            git reset --hard origin/develop
+            
+            echo "[QA] Render config"
+            /usr/local/bin/olmera-render-config qa
+            
+            # Solo recargar scripts si hay cambios en data/
+            if git diff --name-only HEAD@{1} | grep -q "^data/\|^overrides/"; then
+              echo "[QA] Cambios en scripts detectados, recargando..."
+              # Trigger hot-reload: prefer SIGHUP handler (Signals::sighupHandler)
+              if command -v systemctl >/dev/null 2>&1; then
+                sudo systemctl kill -s HUP olmeraot-qa.service || true
+              else
+                pid=$(pidof olmeraot || true)
+                [ -n "$pid" ] && kill -HUP $pid || true
+              fi
+            else
+              echo "[QA] No hay cambios en scripts, omitiendo recarga"
+            fi

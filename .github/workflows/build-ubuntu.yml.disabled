@@ -1,0 +1,183 @@
+name: Build - Ubuntu
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "tests/**/*.cpp"
+  merge_group:
+  push:
+    paths:
+      - "src/**"
+      - "tests/**/*.cpp"
+    branches:
+      - develop  # Solo compila en develop, NO en main
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  MAKEFLAGS: "-j 2"
+
+permissions:
+  contents: write  # Necesario para crear/actualizar releases
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.filter.outputs.cpp }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            cpp:
+              - 'src/**'
+              - 'tests/**/*.cpp'
+              - 'cmake/**'
+              - 'CMakeLists.txt'
+              - 'vcpkg.json'
+            scripts:
+              - 'data/**/*.lua'
+              - 'data/**/*.xml'
+              - 'data-canary/**/*.lua'
+              - 'data-canary/**/*.xml'
+
+  cancel-runs:
+    if: github.event_name == 'pull_request' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.9.1
+        with:
+          access_token: ${{ github.token }}
+
+  job:
+    needs: changes
+    if: |
+      needs.changes.outputs.cpp == 'true' &&
+      (github.event_name == 'push' || !github.event.pull_request.draft)
+    name: ${{ matrix.os }}-${{ matrix.buildtype }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        buildtype: [linux-release, linux-debug]
+        include:
+          - os: ubuntu-22.04
+            triplet: x64-linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@main
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache linux-headers-"$(uname -r)"
+
+      - name: Switch to gcc-13 on Ubuntu 22.04
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-12
+          sudo update-alternatives --set gcc /usr/bin/gcc-13
+
+      - name: Switch to gcc-14 on Ubuntu 24.04
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-14 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-14
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+
+      - name: CCache
+        uses: hendrikmuhs/ccache-action@main
+        with:
+          max-size: "1G"
+          key: ccache-${{ matrix.os }}-${{ matrix.buildtype }}
+          restore-keys: |
+            ccache-${{ matrix.os }}
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/vcpkg
+            ${{ github.workspace }}/vcpkg
+            ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
+
+      - name: Restore artifacts and install vcpkg
+        id: vcpkg-step
+        run: |
+          vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
+          echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
+
+      - name: Get vcpkg
+        uses: lukka/run-vcpkg@main
+        with:
+          vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
+          vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+
+      - name: Get latest CMake and ninja
+        uses: lukka/get-cmake@main
+
+      - name: Run CMake
+        uses: lukka/run-cmake@main
+        with:
+          configurePresetAdditionalArgs: "['-DTOGGLE_BIN_FOLDER=ON']"
+          configurePreset: ${{ matrix.buildtype }}
+          buildPreset: ${{ matrix.buildtype }}
+
+      - name: Upload build dir as artifact (for debugging)
+        uses: actions/upload-artifact@main
+        with:
+          name: canary-${{ matrix.os }}-${{ matrix.buildtype }}-${{ github.sha }}
+          path: ${{ github.workspace }}/build/${{ matrix.buildtype }}/bin/
+
+      # Empaquetar solo para ubuntu-22.04 + linux-release
+      - name: Package binary (zip + sha256)
+        if: matrix.os == 'ubuntu-22.04' && matrix.buildtype == 'linux-release'
+        run: |
+          mkdir -p dist
+          cp build/linux-release/bin/olmeraot dist/olmeraot
+          cd dist
+          zip -r olmeraot-linux-x86_64.zip olmeraot
+          sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS
+          echo "Contenido dist/"
+          ls -l
+
+      # Publicar/actualizar release QA (tag fijo qa-latest) cuando viene de develop
+      - name: Publish QA latest (qa-latest)
+        if: github.ref == 'refs/heads/develop' && matrix.os == 'ubuntu-22.04' && matrix.buildtype == 'linux-release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: qa-latest
+          name: QA Latest
+          body: "Auto-updated from develop (${{ github.sha }})."
+          draft: false
+          prerelease: true
+          files: |
+            dist/olmeraot-linux-x86_64.zip
+            dist/SHA256SUMS
+
+      - name: Run Unit Tests
+        run: ctest -V -R unit
+
+      - name: Run Integration Tests
+        run: ctest -V -R integration

@@ -7,6 +7,8 @@
  * Website: https://docs.opentibiabr.com/
  */
 
+// OlmeraOT - CI/CD Workflow Test - VPS Build - 2025-11-02
+
 #pragma once
 
 #include "security/rsa.hpp"

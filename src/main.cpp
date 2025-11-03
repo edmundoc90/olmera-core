@@ -10,6 +10,9 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
+// Test: QA required before prod deployment
+
+#include "canary_server.hpp"
 int main() {
 	return inject<CanaryServer>().run();
 }

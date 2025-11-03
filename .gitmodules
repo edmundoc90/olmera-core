@@ -1,0 +1,4 @@
+[submodule "overrides"]
+	path = overrides
+	url = https://github.com/edmundoc90/olmera-data.git
+	branch = main

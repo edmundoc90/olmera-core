@@ -1,0 +1,135 @@
+name: Deploy QA (OlmeraOT)
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-qa-olmeraot
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to QA (VPS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: (Opcional) Establecer known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+            chmod 644 ~/.ssh/known_hosts
+          else
+            echo "No SSH_KNOWN_HOSTS provided; skipping."
+          fi
+
+      # NUEVO: Resolver los assets del release qa-latest
+      - name: Resolve QA asset URLs (qa-latest)
+        id: resolve
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+          IFS=/ read -r owner repo <<< "${GITHUB_REPOSITORY}"
+          api="https://api.github.com/repos/${owner}/${repo}/releases/tags/qa-latest"
+          
+          # Verificar si el release existe
+          if ! json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "${api}" 2>/dev/null)"; then
+            echo "::warning::Release qa-latest not found. Skipping deployment."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
+          zip_url="$(echo "$json" | jq -r '.assets[] | select(.name=="olmeraot-linux-x86_64.zip") | .browser_download_url')"
+          sha_url="$(echo "$json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url')"
+
+          if [ -z "$zip_url" ] || [ -z "$sha_url" ]; then
+            echo "::warning::Required assets not found in qa-latest release. Skipping deployment."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "release_exists=true" >> "$GITHUB_OUTPUT"
+          echo "zip_url=$zip_url" >> "$GITHUB_OUTPUT"
+          echo "sha_url=$sha_url" >> "$GITHUB_OUTPUT"
+
+      # SSH + deploy usando variables (si existen) o lo resuelto por el paso anterior
+      - name: SSH into VPS and deploy develop
+        if: steps.resolve.outputs.release_exists == 'true' || vars.CORE_ZIP_URL_QA
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORE_ZIP_URL_QA: ${{ vars.CORE_ZIP_URL_QA || steps.resolve.outputs.zip_url }}
+          CORE_SHA_URL_QA: ${{ vars.CORE_SHA_URL_QA || steps.resolve.outputs.sha_url }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: CORE_ZIP_URL_QA,CORE_SHA_URL_QA
+          script_stop: true
+          script: |
+            set -euo pipefail
+            echo "[QA] Deploy en ${{ secrets.VPS_QA_PATH }}"
+            cd "${{ secrets.VPS_QA_PATH }}"
+
+            echo "[QA] Sync código (develop + submodules)"
+            git fetch --all --prune
+            git checkout develop
+            git reset --hard origin/develop
+            git submodule sync --recursive
+            git submodule update --init --recursive --remote
+
+            echo "[QA] Render config"
+            /usr/local/bin/olmera-render-config qa
+
+            BIN_DIR="/opt/olmeraot/qa/bin"
+            BIN_PATH="${BIN_DIR}/olmeraot"
+            SHA_MARKER="${BIN_DIR}/OLMERAOT_ZIP_SHA"
+
+            mkdir -p "${BIN_DIR}"
+
+            # GUARDAS DEFENSIVAS: si faltan URLs, no intentamos bajar binario
+            if [ -z "${CORE_SHA_URL_QA:-}" ] || [ -z "${CORE_ZIP_URL_QA:-}" ]; then
+              echo "[QA] No hay URLs de binario configuradas. Se omite actualización de binario."
+            else
+              echo "[QA] Descargando SHA remoto"
+              curl -fsSL -o /tmp/SHA256SUMS "$CORE_SHA_URL_QA" || { echo "[QA] No se pudo descargar SHA256SUMS"; exit 1; }
+
+              REMOTE_SHA="$(awk '{print $1}' /tmp/SHA256SUMS)"
+              LOCAL_SHA="$(cat "${SHA_MARKER}" 2>/dev/null || true)"
+
+              if [ -n "${LOCAL_SHA}" ] && [ "${LOCAL_SHA}" = "${REMOTE_SHA}" ] && [ -x "${BIN_PATH}" ]; then
+                echo "[QA] Binario ya actualizado (SHA coincide). No se descarga ZIP."
+              else
+                echo "[QA] Descargando ZIP nuevo"
+                curl -fsSL -o /tmp/olmeraot.zip "$CORE_ZIP_URL_QA"
+
+                echo "[QA] Verificando ZIP con SHA256SUMS"
+                pushd /tmp >/dev/null
+                sha256sum --ignore-missing -c /tmp/SHA256SUMS
+                popd >/dev/null
+
+                echo "[QA] Descomprimiendo ZIP al bin dir"
+                unzip -o /tmp/olmeraot.zip -d "${BIN_DIR}"
+                chmod +x "${BIN_PATH}"
+                echo "${REMOTE_SHA}" > "${SHA_MARKER}"
+
+                # Trigger hot-reload in case scripts/items were updated without restarting
+                if command -v systemctl >/dev/null 2>&1; then
+                  sudo systemctl kill -s HUP olmeraot-qa.service || true
+                else
+                  pid=$(pidof olmeraot || true)
+                  [ -n "$pid" ] && kill -HUP $pid || true
+                fi
+              fi
+            fi
+
+            echo "[QA] Reiniciando servicio (QA sí reinicia)"
+            sudo systemctl restart olmeraot-qa.service
+            systemctl --no-pager --lines=5 status olmeraot-qa.service || true
+            tail -n 120 /var/log/olmeraot/qa.log || true

@@ -1,0 +1,112 @@
+name: Deploy PROD (OlmeraOT)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod-olmeraot
+  cancel-in-progress: false
+
+env:
+  CORE_ZIP_URL_PROD: ${{ vars.CORE_ZIP_URL_PROD }}
+  CORE_SHA_URL_PROD: ${{ vars.CORE_SHA_URL_PROD }}
+
+jobs:
+  deploy:
+    name: Deploy to PROD (VPS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: (Opcional) Establecer known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+            chmod 644 ~/.ssh/known_hosts
+          else
+            echo "No SSH_KNOWN_HOSTS provided; skipping."
+          fi
+
+      - name: SSH into VPS and stage binary (no restart)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORE_ZIP_URL_PROD: ${{ env.CORE_ZIP_URL_PROD }}
+          CORE_SHA_URL_PROD: ${{ env.CORE_SHA_URL_PROD }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: CORE_ZIP_URL_PROD,CORE_SHA_URL_PROD
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            echo "[PROD] Deploy (sin restart) en ${{ secrets.VPS_PROD_PATH }}"
+            cd "${{ secrets.VPS_PROD_PATH }}"
+
+            echo "[PROD] Sync código (main + submodules SIN --remote)"
+            git fetch --all --prune
+            git checkout main
+            git reset --hard origin/main
+            git submodule sync --recursive
+            git submodule update --init --recursive
+
+            echo "[PROD] Render config"
+            /usr/local/bin/olmera-render-config prod
+
+            BIN_DIR="/opt/olmeraot/prod/bin"
+            BIN_PATH="${BIN_DIR}/olmeraot"
+            SHA_MARKER="${BIN_DIR}/OLMERAOT_ZIP_SHA"
+            TMP_DIR="$(mktemp -d /tmp/olmeraot.XXXXXX)"
+
+            mkdir -p "${BIN_DIR}"
+
+            echo "[PROD] Asegurando dependencias (idempotente)"
+            if ! command -v unzip >/dev/null 2>&1; then
+              sudo apt-get update -y && sudo apt-get install -y unzip
+            fi
+            if ! command -v curl >/dev/null 2>&1; then
+              sudo apt-get update -y && sudo apt-get install -y curl
+            fi
+
+            echo "[PROD] Descargando SHA remoto"
+            curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "$CORE_SHA_URL_PROD"
+
+            # Si tu SHA256SUMS tiene UNA sola línea, esto basta:
+            REMOTE_SHA="$(awk 'NF>=1 {print $1; exit}' "${TMP_DIR}/SHA256SUMS")"
+            LOCAL_SHA="$(cat "${SHA_MARKER}" 2>/dev/null || true)"
+
+            if [ -n "${LOCAL_SHA}" ] && [ "${LOCAL_SHA}" = "${REMOTE_SHA}" ] && [ -x "${BIN_PATH}" ]; then
+              echo "[PROD] Binario ya actualizado (SHA coincide). No se descarga ZIP."
+            else
+              echo "[PROD] Descargando ZIP nuevo"
+              curl -fsSL -o "${TMP_DIR}/olmeraot.zip" "$CORE_ZIP_URL_PROD"
+
+              echo "[PROD] Verificando ZIP con SHA256SUMS"
+              ( cd "${TMP_DIR}" && sha256sum --ignore-missing -c "${TMP_DIR}/SHA256SUMS" )
+
+              echo "[PROD] Descomprimiendo ZIP a temp y reemplazo atómico"
+              unzip -o "${TMP_DIR}/olmeraot.zip" -d "${TMP_DIR}/unz"
+              # Asumimos que el ZIP contiene el binario llamado 'olmeraot' en la raíz o dentro de /bin
+              if [ -f "${TMP_DIR}/unz/olmeraot" ]; then
+                chmod +x "${TMP_DIR}/unz/olmeraot"
+                mv -f "${TMP_DIR}/unz/olmeraot" "${BIN_PATH}.new"
+              elif [ -f "${TMP_DIR}/unz/bin/olmeraot" ]; then
+                chmod +x "${TMP_DIR}/unz/bin/olmeraot"
+                mv -f "${TMP_DIR}/unz/bin/olmeraot" "${BIN_PATH}.new"
+              else
+                echo "[ERROR] No se encontró 'olmeraot' dentro del ZIP."
+                exit 1
+              fi
+
+              mv -f "${BIN_PATH}.new" "${BIN_PATH}"
+              echo "${REMOTE_SHA}" > "${SHA_MARKER}"
+              echo "[PROD] Binario actualizado y listo (sin reiniciar servicio)."
+            fi
+
+            rm -rf "${TMP_DIR}"
+
+            echo "[PROD] Estado del servicio (no reiniciado):"
+            systemctl --no-pager --lines=3 status olmeraot-prod.service || true
