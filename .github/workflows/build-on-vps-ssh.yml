@@ -1,0 +1,115 @@
+name: Build on VPS via SSH
+
+on:
+  push:
+    branches: [ develop ]
+    paths:
+      - 'src/**'
+      - 'tests/**/*.cpp'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: ubuntu-22.04-linux-release (VPS-SSH)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute metadata
+        id: meta
+        run: |
+          echo "sha_short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "repo=${GITHUB_REPOSITORY}" >> $GITHUB_OUTPUT
+
+      - name: Prepare VPS workspace and build
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REPO: ${{ steps.meta.outputs.repo }}
+          SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.BUILD_SSH_HOST }}
+          username: ${{ secrets.BUILD_SSH_USER }}
+          key: ${{ secrets.BUILD_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            BASE_DIR=/opt/builds/olmera
+            WORKDIR=$BASE_DIR/${SHA}
+            mkdir -p "$WORKDIR"
+            cd "$WORKDIR"
+
+            # Get source snapshot (public tarball by commit SHA)
+            if [ ! -d src ]; then
+              curl -fsSL -o src.tar.gz "https://codeload.github.com/${REPO}/tar.gz/${SHA}"
+              tar -xzf src.tar.gz --strip-components=1
+              rm -f src.tar.gz
+            fi
+
+            # Ensure prerequisites on VPS (first run only installs)
+            export DEBIAN_FRONTEND=noninteractive
+            if ! command -v gcc >/dev/null 2>&1; then
+              sudo apt-get update -y && sudo apt-get install -y build-essential unzip curl git pkg-config
+            fi
+            if ! command -v cmake >/dev/null 2>&1; then
+              sudo apt-get update -y && sudo apt-get install -y cmake ninja-build
+            fi
+
+            # vcpkg bootstrap (cached under /opt/vcpkg-cache)
+            VCPKG_ROOT=/opt/vcpkg-cache
+            if [ ! -d "$VCPKG_ROOT" ]; then
+              git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+              "$VCPKG_ROOT"/bootstrap-vcpkg.sh
+            fi
+            export VCPKG_ROOT
+
+            # Configure and build (linux-release)
+            cd "$WORKDIR"
+            cmake -S . -B build/linux-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DTOGGLE_BIN_FOLDER=ON
+            cmake --build build/linux-release --config Release -j $(nproc)
+
+            # Package artifacts
+            mkdir -p dist
+            cp build/linux-release/bin/olmeraot dist/olmeraot
+            (cd dist && zip -r olmeraot-linux-x86_64.zip olmeraot && sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS)
+
+      - name: Publish qa-latest from VPS
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ steps.meta.outputs.repo }}
+          SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.BUILD_SSH_HOST }}
+          username: ${{ secrets.BUILD_SSH_USER }}
+          key: ${{ secrets.BUILD_SSH_KEY }}
+          envs: GH_TOKEN,REPO,SHA
+          script_stop: true
+          script: |
+            set -euo pipefail
+            BASE_DIR=/opt/builds/olmera
+            WORKDIR=$BASE_DIR/${SHA}
+            cd "$WORKDIR"
+
+            # Install GitHub CLI if missing
+            if ! command -v gh >/dev/null 2>&1; then
+              type -p curl >/dev/null || sudo apt-get install -y curl
+              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+              sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update -y && sudo apt-get install -y gh
+            fi
+
+            cd dist
+            # Create or update qa-latest release (prerelease) and upload assets
+            if gh release view qa-latest -R "$REPO" >/dev/null 2>&1; then
+              gh release upload qa-latest olmeraot-linux-x86_64.zip SHA256SUMS -R "$REPO" --clobber
+            else
+              gh release create qa-latest olmeraot-linux-x86_64.zip SHA256SUMS -R "$REPO" \
+                --title "QA Latest" \
+                --notes "Auto-updated from develop ($SHA) via VPS build." \
+                --prerelease
+            fi
