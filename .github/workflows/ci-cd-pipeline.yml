@@ -191,17 +191,23 @@ jobs:
           fi
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Upload scripts to QA (scp)
+      - name: Upload scripts to QA (rsync via SSH)
         if: env.QA_DEPLOY_ENABLED == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "data,data-canary,overrides"
-          target: ${{ secrets.VPS_QA_PATH }}/current
-          overwrite: true
-          rm: false
+        run: |
+          set -euo pipefail
+          
+          # Configurar SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Rsync directo a current/
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            data/ data-canary/ overrides/ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.VPS_QA_PATH }}/current/
+          
+          rm -f ~/.ssh/deploy_key
 
       - name: Reload QA server (SIGHUP)
         if: env.QA_DEPLOY_ENABLED == 'true'
@@ -309,17 +315,23 @@ jobs:
             dist/olmeraot-linux-x86_64.zip
             dist/SHA256SUMS
 
-      - name: Upload scripts to QA (scp)
+      - name: Upload scripts to QA (rsync via SSH)
         if: env.QA_DEPLOY_ENABLED == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "data,data-canary,overrides"
-          target: ${{ secrets.VPS_QA_PATH }}/current
-          overwrite: true
-          rm: false
+        run: |
+          set -euo pipefail
+          
+          # Configurar SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Rsync directo a current/
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            data/ data-canary/ overrides/ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.VPS_QA_PATH }}/current/
+          
+          rm -f ~/.ssh/deploy_key
 
       - name: Deploy binary + restart QA Server
         if: env.QA_DEPLOY_ENABLED == 'true'
