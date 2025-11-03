@@ -170,6 +170,8 @@ jobs:
     # environment:
     #   name: qa-scripts
     #   url: https://qa.olmeraot.com
+    env:
+      QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -177,7 +179,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Prepare SSH known_hosts (QA)
-        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
+        if: env.QA_DEPLOY_ENABLED == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -190,7 +192,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Upload scripts to QA (scp)
-        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
+        if: env.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -202,10 +204,9 @@ jobs:
           rm: false
 
       - name: Reload QA server (SIGHUP)
-        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
+        if: env.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
-          # Mapped to existing repository secrets
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -223,20 +224,19 @@ jobs:
             echo "✅ Scripts synced and reloaded without server restart"
 
       - name: Comment on commit
-        if: ${{ vars.QA_DEPLOY_ENABLED == 'true' || secrets.QA_DEPLOY_ENABLED == 'true' }}
+        if: env.QA_DEPLOY_ENABLED == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('data scripts');
+            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
             if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
-            
-            github.rest.repos.createCommitComment({
+            await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               commit_sha: context.sha,
               body: `✅ Synced ${changes.join(' + ')} to QA without recompiling/restarting server`
-            })
+            });
 
   # ============================================================================
   # STAGE 3B: Deploy Binary to QA (con build)
@@ -254,6 +254,8 @@ jobs:
     # cuando existe un environment con deployment branches configuradas, ignorando
     # completamente las condiciones if. Esto es un comportamiento documentado de
     # GitHub Actions que no tiene solución alternativa.
+    env:
+      QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
     # Ver: https://github.com/actions/runner/issues/2507
     # environment:
     #   name: qa-binary
@@ -265,7 +267,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
       
       - name: Prepare SSH known_hosts (QA)
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: env.QA_DEPLOY_ENABLED == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -308,7 +310,7 @@ jobs:
             dist/SHA256SUMS
 
       - name: Upload scripts to QA (scp)
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: env.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -320,7 +322,7 @@ jobs:
           rm: false
 
       - name: Deploy binary + restart QA Server
-        if: vars.QA_DEPLOY_ENABLED == 'true'
+        if: env.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           # Mapped to existing repository secrets
