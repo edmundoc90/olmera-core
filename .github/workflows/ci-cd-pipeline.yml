@@ -265,10 +265,6 @@ jobs:
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
-    # Environment removido - misma razon que deploy-qa
-    # environment:
-    #   name: qa-scripts
-    #   url: https://qa.olmeraot.com
     env:
       QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
     steps:
