@@ -173,6 +173,7 @@ jobs:
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
+    # Environment renombrado para evitar conflicto con branch protection
     environment:
       name: qa-scripts
       url: https://qa.olmeraot.com
@@ -245,10 +246,11 @@ jobs:
       needs.changes.outputs.cpp == 'true' &&
       needs.build.result == 'success'
     runs-on: ubuntu-latest
-    # NOTA: Environment deshabilitado hasta que se cree manualmente en GitHub
-    # environment:
-    #   name: qa
-    #   url: https://qa.olmeraot.com
+    # NOTA: Environment renombrado a 'qa-binary' para evitar conflicto con
+    # branch protection rules que fuerzan evaluación prematura del job
+    environment:
+      name: qa-binary
+      url: https://qa.olmeraot.com
     steps:
       - uses: actions/checkout@v4
       
@@ -327,7 +329,7 @@ jobs:
     if: ${{ needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
-      name: staging
+      name: staging-server
       url: https://staging.olmeraot.com
     steps:
       - uses: actions/checkout@v4
@@ -380,7 +382,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
-      name: production
+      name: production-server
       url: https://olmeraot.com
     steps:
       - name: Download qa-latest release assets
