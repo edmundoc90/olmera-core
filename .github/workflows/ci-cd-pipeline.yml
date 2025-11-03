@@ -70,6 +70,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Optimize apt performance
+        run: |
+          # Use Azure mirrors (faster for GitHub Actions runners)
+          sudo sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
+          sudo sed -i 's|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
+          # Enable parallel downloads
+          echo 'Acquire::Queue-Mode "host";' | sudo tee /etc/apt/apt.conf.d/99parallel
+          echo 'Acquire::http::Pipeline-Depth "5";' | sudo tee -a /etc/apt/apt.conf.d/99parallel
+
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
@@ -163,6 +172,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Optimize apt performance
+        run: |
+          # Use Azure mirrors (faster for GitHub Actions runners)
+          sudo sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
+          sudo sed -i 's|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
+          # Enable parallel downloads
+          echo 'Acquire::Queue-Mode "host";' | sudo tee /etc/apt/apt.conf.d/99parallel
+          echo 'Acquire::http::Pipeline-Depth "5";' | sudo tee -a /etc/apt/apt.conf.d/99parallel
 
       - name: Install Linux Dependencies
         run: |
