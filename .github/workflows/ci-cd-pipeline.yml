@@ -762,7 +762,7 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [build, deploy-qa]
+    needs: [changes, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
@@ -773,6 +773,38 @@ jobs:
       name: production-server
       url: https://olmeraot.com
     steps:
+      - name: Upload scripts to Production (tar + SSH)
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        run: |
+          set -euo pipefail
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary overrides
+          
+          # Transferir a producción usando la clave del repo
+          scp -o StrictHostKeyChecking=yes \
+            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+            /tmp/scripts.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+
+      - name: Extract scripts in Production
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
+            cd "$DEST_PATH"
+            rm -rf current/data current/data-canary current/overrides
+            tar xzf /tmp/scripts.tar.gz
+            ln -sf ../config.lua current/config.lua
+            rm -f /tmp/scripts.tar.gz
+
       - name: Download qa-latest release assets
         run: |
           # Descargar desde qa-latest (ya probado en QA)
