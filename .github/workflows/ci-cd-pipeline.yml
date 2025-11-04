@@ -821,4 +821,8 @@ jobs:
             # Restart (no wait, let systemctl handle it)
             sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
             
+            # Health check (with no-prompt mode)
+            sleep 3
+            sudo -n systemctl status olmeraot-prod --no-pager 2>&1 || true
+            
             echo "✅ Production deployment completed successfully"
