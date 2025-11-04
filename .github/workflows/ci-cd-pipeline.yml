@@ -808,7 +808,7 @@ jobs:
               -o olmeraot.zip \
               "https://github.com/${{ github.repository }}/releases/download/prod-latest/olmeraot-linux-x86_64.zip"
             
-            unzip -o olmeraot.zip
+            unzip -qq -o olmeraot.zip
             chmod +x olmeraot
             
             # Create symlink for config.lua in current/
