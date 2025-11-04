@@ -28,9 +28,9 @@ jobs:
     name: "Stage 1: Detect Changes"
     runs-on: ubuntu-latest
     outputs:
-      cpp: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.cpp || 'false' }}
-      scripts: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.scripts || 'false' }}
-      overrides: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.overrides || 'false' }}
+      cpp: ${{ steps.filter.outputs.cpp }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      overrides: ${{ steps.filter.outputs.overrides }}
     steps:
       - uses: actions/checkout@v4
         with:
