@@ -58,11 +58,12 @@ jobs:
               - 'overrides/**'
 
   # ============================================================================
-  # STAGE 1B: Detect PR Changes on main (isolate what merged PR actually changed)
+  # STAGE 1B: Detect PR Changes (for main branch - isolate merged PR changes)
   # ============================================================================
-  changes-main-pr:
-    name: "Stage 1B: Detect PR Changes (main only)"
-    if: github.ref == 'refs/heads/main'
+  detect-pr-changes-main:
+    name: "Stage 1B: Detect PR Changes (main)"
+    # Run on all branches but only detect when on main
+    # This ensures the check shows up in branch protection options
     runs-on: ubuntu-latest
     outputs:
       cpp: ${{ steps.detect.outputs.cpp }}
@@ -77,6 +78,16 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = context.sha;
+            const ref = context.ref;
+
+            // Only detect on main; on other branches, output false
+            if (!ref.endsWith('main')) {
+              core.notice('Not on main branch. Skipping PR-based detection.');
+              core.setOutput('cpp','false');
+              core.setOutput('scripts','false');
+              core.setOutput('overrides','false');
+              return;
+            }
 
             // Find PR associated with this commit
             const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
@@ -419,11 +430,11 @@ jobs:
   # ============================================================================
   deploy-scripts-prod:
     name: "Stage 3B: Deploy Scripts to Production (Main Only)"
-    needs: changes-main-pr
+    needs: detect-pr-changes-main
     if: |
       github.ref == 'refs/heads/main' &&
-      (needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true') &&
-      needs.changes-main-pr.outputs.cpp != 'true' &&
+      (needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true') &&
+      needs.detect-pr-changes-main.outputs.cpp != 'true' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
@@ -505,8 +516,8 @@ jobs:
         with:
           script: |
             const changes = [];
-            if ('${{ needs.changes-main-pr.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes-main-pr.outputs.overrides }}' === 'true') changes.push('overrides');
+            if ('${{ needs.detect-pr-changes-main.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.detect-pr-changes-main.outputs.overrides }}' === 'true') changes.push('overrides');
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -841,11 +852,11 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [changes-main-pr, build, deploy-qa]
+    needs: [detect-pr-changes-main, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
-      needs.changes-main-pr.outputs.cpp == 'true' &&
+      needs.detect-pr-changes-main.outputs.cpp == 'true' &&
       (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
       !cancelled()
     runs-on: ubuntu-latest
@@ -860,7 +871,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Upload scripts to Production (tar + SSH)
-        if: needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true'
+        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
         run: |
           set -euo pipefail
           # Crear tarball con prefijo current/ usando transform
@@ -878,7 +889,7 @@ jobs:
           rm -f ~/.ssh/deploy_key
 
       - name: Extract scripts in Production
-        if: needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true'
+        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}

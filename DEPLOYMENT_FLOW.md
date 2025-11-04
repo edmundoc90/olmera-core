@@ -26,7 +26,7 @@ Acceder a: **Settings → Branches → Branch protection rules**
   - Require branches to be up to date before merging
   - Status checks required:
     - `Stage 1: Detect Changes`
-    - `Stage 1B: Detect PR Changes (main only)`
+    - `Stage 1B: Detect PR Changes (main)` (aparecerá después del primer run)
 
 - ✅ **Restrict who can push to matching branches**
   - Allow force pushes: `false`
