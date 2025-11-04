@@ -1,4 +1,4 @@
-name: Production Scripts Sync (Main Only)
+name: "Stage 5A: Sync Scripts to Production (Main Only)"
 
 on:
   push:
@@ -39,7 +39,7 @@ jobs:
               - 'vcpkg.json'
 
   sync-scripts-prod:
-    name: Sync Scripts to Production
+    name: "Stage 5A: Sync Scripts to Production"
     needs: changes
     if: |
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
