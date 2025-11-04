@@ -6,6 +6,7 @@ overrides merge=ours
 .gitmodules merge=ours
 infra/Dockerfile.olmera merge=ours
 data/core.lua merge=ours
+CMakeLists.txt merge=ours
 
 # Keep CI/CD documentation
 docs/CI_CD.md merge=ours
