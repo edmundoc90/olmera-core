@@ -9,6 +9,10 @@ on:
       - develop
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CMAKE_BUILD_PARALLEL_LEVEL: 2
   MAKEFLAGS: "-j 2"
@@ -140,7 +144,8 @@ jobs:
         if: matrix.buildtype == 'linux-release'
         run: |
           mkdir -p dist
-          cp build/linux-release/bin/olmeraot dist/olmeraot
+          # Renombrar canary a olmeraot
+          mv build/linux-release/bin/canary dist/olmeraot
           cd dist
           zip -r olmeraot-linux-x86_64.zip olmeraot
           sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS
@@ -241,7 +246,8 @@ jobs:
       - name: Package debug binary
         run: |
           mkdir -p dist
-          cp build/linux-debug/bin/olmeraot dist/olmeraot-debug
+          # Renombrar canary-debug a olmeraot-debug
+          mv build/linux-debug/bin/canary-debug dist/olmeraot-debug
           cd dist
           zip -r olmeraot-linux-x86_64-debug.zip olmeraot-debug
           sha256sum olmeraot-linux-x86_64-debug.zip > SHA256SUMS-debug

@@ -10,9 +10,7 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
-// Mixed-change test: C++ + Lua → QA deploy then Prod (scripts sync + binary)
-
-#include "canary_server.hpp"
+// Olmera OT Server - Custom Build
 int main() {
 	return inject<CanaryServer>().run();
 }

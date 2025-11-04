@@ -373,7 +373,6 @@ ReturnValue Actions::internalUseItem(const std::shared_ptr<Player> &player, cons
 			player->onCloseContainer(openContainer);
 			player->closeContainer(oldContainerId);
 		} else {
-			container->clearLootHighlight();
 			player->addContainer(index, openContainer);
 			player->onSendContainer(openContainer);
 		}

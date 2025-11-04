@@ -401,4 +401,3 @@ database_backup
 # CLION
 cmake-build-*
 compile_commands.json
-/olmera-core.code-workspace
