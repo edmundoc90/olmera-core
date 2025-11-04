@@ -42,8 +42,10 @@ jobs:
       - uses: dorny/paths-filter@v2
         id: filter
         with:
-          # On main, compare with previous commit (HEAD~1), not with develop
-          base: ${{ github.ref == 'refs/heads/main' && 'HEAD~1' || '' }}
+          # On main, compare current commit with previous (using ref comparison)
+          # On develop, use default comparison with base branch
+          ref: ${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+          base: ${{ github.ref == 'refs/heads/main' && format('{0}^', github.sha) || '' }}
           filters: |
             cpp:
               - 'src/**'
