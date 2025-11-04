@@ -192,3 +192,4 @@ function addStamina(playerId, ...)
 	end
 	return false
 end
+# test change
