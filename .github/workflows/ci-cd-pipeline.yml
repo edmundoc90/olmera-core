@@ -515,14 +515,20 @@ jobs:
             });
 
   # ============================================================================
-  # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
+  # STAGE 4A: Approve and Merge to Main (DEPRECATED - Use auto-release-pr instead)
   # ============================================================================
+  # This job is deprecated in favor of auto-release-pr.yml which creates
+  # PRs to main containing ONLY the merged feature's changes (not all of develop).
+  # Kept for reference but disabled by default.
+  # To enable: set vars.USE_OLD_DEVELOP_TO_MAIN_FLOW = 'true'
   approve-merge-to-main:
-    name: "Stage 4A: Approve Merge to Main"
+    name: "Stage 4A: Approve Merge to Main [DEPRECATED]"
     needs: [changes, sync-scripts-qa, deploy-qa]
     if: |
+      false &&
       github.ref == 'refs/heads/develop' &&
       !cancelled() &&
+      vars.USE_OLD_DEVELOP_TO_MAIN_FLOW == 'true' &&
       (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success')
     runs-on: ubuntu-latest
     permissions:
