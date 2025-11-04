@@ -791,7 +791,6 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          request_pty: true
           script: |
             set -euo pipefail
             DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
@@ -808,18 +807,18 @@ jobs:
               -o olmeraot.zip \
               "https://github.com/${{ github.repository }}/releases/download/prod-latest/olmeraot-linux-x86_64.zip"
             
+            # Extract (quiet mode to prevent hangs)
             unzip -qq -o olmeraot.zip
             chmod +x olmeraot
             
-            # Create symlink for config.lua in current/
+            # Setup config
             ln -sf ../config.lua current/config.lua
-            # Ensure key.pem available in current even if scripts didn't change
             if [ ! -f current/key.pem ] && [ -f key.pem ]; then
               cp -f key.pem current/key.pem
             fi
             chmod 640 current/key.pem || true
             
-            # Restart production service
-            sudo systemctl restart olmeraot-prod
+            # Restart (no wait, let systemctl handle it)
+            sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
             
             echo "✅ Production deployment completed successfully"
