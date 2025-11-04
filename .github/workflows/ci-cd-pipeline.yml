@@ -15,6 +15,22 @@ env:
 
 permissions:
   contents: write
+  # ============================================================================
+  # STAGE 5A (placeholder on develop): Visual anchor after 4A
+  # NOTE: Actual scripts sync to Production runs on main in workflow
+  #       "Stage 5A: Sync Scripts to Production (Main Only)"
+  #       This placeholder exists only to show ordering after Stage 4A.
+  # ============================================================================
+  stage-5a-after-4a:
+    name: "Stage 5A: Sync Scripts to Production"
+    needs: [approve-merge-to-main]
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Info
+        run: |
+          echo "Stage 5A runs after the PR is merged to main."
+          echo "Look for workflow: 'Stage 5A: Sync Scripts to Production (Main Only)'."
 
 jobs:
   # ============================================================================
