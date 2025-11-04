@@ -8,3 +8,4 @@ dofile(CORE_DIRECTORY .. "/stages.lua")
 -- ci: trigger sync-scripts-qa to validate Stage 4A approval
 -- ci: mixed-change test (scripts)
 -- test: scripts-only path with full datapack + key.pem sync to prod
+-- deploy: scripts-only validation run
