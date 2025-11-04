@@ -1,0 +1,4 @@
+# Code owners for critical automation
+# Changes to GitHub Actions workflows must be reviewed by @edmundoc90
+
+.github/workflows/** @edmundoc90

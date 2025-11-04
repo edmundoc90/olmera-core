@@ -50,6 +50,7 @@ jobs:
               - 'data-canary/**/*.lua'
               - 'data-canary/**/*.xml'
             overrides:
+              - 'overrides'
               - 'overrides/**'
 
   # ============================================================================
@@ -264,10 +265,6 @@ jobs:
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
-    # Environment removido - misma razón que deploy-qa
-    # environment:
-    #   name: qa-scripts
-    #   url: https://qa.olmeraot.com
     env:
       QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
     steps:
@@ -297,7 +294,7 @@ jobs:
           # Crear tarball con prefijo current/ usando transform
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
-            data data-canary overrides
+            data data-canary data-otservbr-global overrides key.pem
           
           # Configurar SSH key
           mkdir -p ~/.ssh
@@ -313,7 +310,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ secrets.VPS_QA_PATH }} && \
-             rm -rf current/data current/data-canary current/overrides && \
+             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
              rm /tmp/scripts.tar.gz"
           
@@ -368,6 +365,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     environment:
       name: approve-production
       url: https://github.com/${{ github.repository }}/compare/main...develop
@@ -395,6 +393,36 @@ jobs:
             core.setOutput('number', pr.number.toString());
             core.setOutput('node_id', pr.node_id);
             core.setOutput('html_url', pr.html_url);
+
+      - name: Request review from maintainer
+        if: steps.pr.outputs.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = Number('${{ steps.pr.outputs.number }}');
+            try {
+              await github.rest.pulls.requestReviewers({ owner, repo, pull_number: number, reviewers: ['edmundoc90'] });
+              core.info('✅ Requested review from edmundoc90');
+            } catch (e) {
+              core.warning(`Could not request reviewer: ${e.message}`);
+            }
+
+      - name: Add label to PR
+        if: steps.pr.outputs.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = Number('${{ steps.pr.outputs.number }}');
+            try {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['prod-promotion'] });
+              core.info('🏷️  Label added to PR');
+            } catch (e) {
+              core.warning(`Could not add label: ${e.message}`);
+            }
 
       - name: Enable auto-merge (squash) when checks pass
         if: steps.pr.outputs.node_id
@@ -500,7 +528,7 @@ jobs:
           # Crear tarball con prefijo current/ usando transform
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
-            data data-canary overrides
+            data data-canary data-otservbr-global overrides key.pem
           
           # Configurar SSH key
           mkdir -p ~/.ssh
@@ -516,7 +544,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ secrets.VPS_QA_PATH }} && \
-             rm -rf current/data current/data-canary current/overrides && \
+             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
              rm /tmp/scripts.tar.gz"
           
@@ -547,6 +575,11 @@ jobs:
             
             # Create symlink for config.lua in current/
             ln -sf ../config.lua current/config.lua
+            # Ensure key.pem present in current (fallback if not synced)
+            if [ ! -f current/key.pem ] && [ -f key.pem ]; then
+              cp -f key.pem current/key.pem
+            fi
+            chmod 640 current/key.pem || true
             
             # Restart server (binary changed)
             echo "Restarting QA server (binary updated)..."
@@ -631,106 +664,15 @@ jobs:
             
             sudo systemctl restart olmeraot-staging || true
 
-  # ============================================================================
-  # STAGE 5A: Sync Scripts to Production (scripts-only, sin rebuild)
-  # ============================================================================
-  sync-scripts-prod:
-    name: "Stage 5A: Sync Scripts to Production"
-    needs: changes
-    if: |
-      github.ref == 'refs/heads/main' &&
-      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: production-server
-      url: https://olmeraot.com
-    env:
-      PROD_DEPLOY_ENABLED: ${{ vars.PROD_DEPLOY_ENABLED || secrets.PROD_DEPLOY_ENABLED }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-          token: ${{ secrets.GH_PAT || github.token }}
-
-      - name: Prepare SSH known_hosts (Prod)
-        if: env.PROD_DEPLOY_ENABLED == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Upload scripts to Production (tar + SSH)
-        if: env.PROD_DEPLOY_ENABLED == 'true'
-        run: |
-          set -euo pipefail
-          
-          # Crear tarball con prefijo current/ usando transform
-          tar czf /tmp/scripts.tar.gz \
-            --transform 's,^,current/,' \
-            data data-canary overrides
-          
-          # Transferir a producción
-          scp -o StrictHostKeyChecking=yes \
-            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
-            /tmp/scripts.tar.gz \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
-
-      - name: Extract and reload (SIGHUP)
-        if: env.PROD_DEPLOY_ENABLED == 'true'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
-            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
-            
-            cd "$DEST_PATH"
-            
-            # Limpiar directorios actuales antes de extraer
-            rm -rf current/data current/data-canary current/overrides
-            
-            # Extraer directamente en el path padre
-            tar xzf /tmp/scripts.tar.gz
-            
-            # Create symlink for config.lua in current/
-            ln -sf ../config.lua current/config.lua
-            
-            # Hot-reload con SIGHUP
-            pkill -SIGHUP olmeraot || echo "Server not running or signal failed"
-            
-            echo "✅ Scripts synced to production and server reloaded"
-
-      - name: Comment on commit
-        if: env.PROD_DEPLOY_ENABLED == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
-            await github.rest.repos.createCommitComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `✅ Synced ${changes.join(' + ')} to Production without recompiling/restarting server`
-            });
 
   # ============================================================================
   # STAGE 5B: Promote Binary to Production (solo en main, requiere aprobación)
   # ============================================================================
+  # STAGE 5B: Promote Binary to Production (with scripts if mixed)
+  # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [build, deploy-qa]
+    needs: [changes, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
@@ -741,6 +683,45 @@ jobs:
       name: production-server
       url: https://olmeraot.com
     steps:
+      - name: Checkout repository (for scripts packaging)
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Upload scripts to Production (tar + SSH)
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        run: |
+          set -euo pipefail
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary data-otservbr-global overrides key.pem
+          
+          # Transferir a producción usando la clave del repo
+          scp -o StrictHostKeyChecking=yes \
+            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+            /tmp/scripts.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+
+      - name: Extract scripts in Production
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
+            cd "$DEST_PATH"
+            rm -rf current/data current/data-canary current/data-otservbr-global current/overrides
+            tar xzf /tmp/scripts.tar.gz
+            ln -sf ../config.lua current/config.lua
+            chmod 640 current/key.pem || true
+            rm -f /tmp/scripts.tar.gz
+
       - name: Download qa-latest release assets
         run: |
           # Descargar desde qa-latest (ya probado en QA)
@@ -820,6 +801,11 @@ jobs:
             
             # Create symlink for config.lua in current/
             ln -sf ../config.lua current/config.lua
+            # Ensure key.pem available in current even if scripts didn't change
+            if [ ! -f current/key.pem ] && [ -f key.pem ]; then
+              cp -f key.pem current/key.pem
+            fi
+            chmod 640 current/key.pem || true
             
             # Restart production service
             sudo systemctl restart olmeraot-prod

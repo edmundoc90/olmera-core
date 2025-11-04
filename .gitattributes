@@ -1,1 +1,3 @@
+# Keep our workflow files on merges (discard incoming changes)
+.github/workflows/** merge=ours
 text eol=lf

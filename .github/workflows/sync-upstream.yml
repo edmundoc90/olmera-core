@@ -49,6 +49,12 @@ jobs:
           git checkout $target
           git merge upstream/main --no-commit --no-ff
 
+      - name: Protect local workflows (discard upstream changes)
+        if: steps.merge.outcome == 'success'
+        run: |
+          # Mantener siempre nuestra version de los workflows
+          git restore --source=HEAD --staged --worktree .github/workflows || true
+
       - name: Validate and restore overrides
         if: steps.merge.outcome == 'success'
         id: validate
