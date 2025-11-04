@@ -5,5 +5,5 @@ dofile(CORE_DIRECTORY .. "/global.lua")
 dofile(CORE_DIRECTORY .. "/libs/libs.lua")
 dofile(CORE_DIRECTORY .. "/stages.lua")
 
--- test: scripts-only with separate prod-scripts-only workflow (2024-11-03)
+-- test: clean scripts-only deployment with protected files (2024-11-03)
 -- deploy: scripts-only validation run
