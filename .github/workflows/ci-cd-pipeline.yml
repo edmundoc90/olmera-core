@@ -34,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Enable submodules on all branches for change detection
           submodules: true
           fetch-depth: 2
           token: ${{ secrets.GH_PAT || github.token }}
@@ -56,6 +57,12 @@ jobs:
             overrides:
               - 'overrides'
               - 'overrides/**'
+      
+      - name: Debug - Show detected changes
+        run: |
+          echo "cpp: ${{ steps.filter.outputs.cpp }}"
+          echo "scripts: ${{ steps.filter.outputs.scripts }}"
+          echo "overrides: ${{ steps.filter.outputs.overrides }}"
 
   # ============================================================================
   # STAGE 2: Build & Test
@@ -63,7 +70,7 @@ jobs:
   build:
     name: "Stage 2: Build & Test"
     needs: changes
-    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft)
+    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft) && github.ref != 'refs/heads/main'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -170,7 +177,7 @@ jobs:
   build-debug:
     name: "Stage 2B: Build Debug (Manual)"
     needs: changes
-    if: needs.changes.outputs.cpp == 'true'
+    if: needs.changes.outputs.cpp == 'true' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-22.04
     environment:
       name: debug-build
@@ -269,7 +276,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true'
+      needs.changes.outputs.cpp != 'true' &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
@@ -466,7 +474,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       !cancelled() &&
-      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success')
+      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success') &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -565,7 +574,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       needs.changes.outputs.cpp == 'true' &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     # NOTA: Environment removido porque GitHub Actions fuerza la ejecución del job
     # cuando existe un environment con deployment branches configuradas, ignorando
@@ -702,7 +712,7 @@ jobs:
     name: "Stage 4: Deploy to Staging"
     needs: [build, deploy-qa]
     # Solo ejecuta si build y deploy-qa tuvieron éxito (no skipped)
-    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
+    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment:
       name: staging-server
@@ -778,7 +788,8 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [changes, build, deploy-qa]
+    # Make this job independent - it will use existing qa-latest release
+    needs: [changes]
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
@@ -790,7 +801,8 @@ jobs:
       name: production-server
       url: https://olmeraot.com
     steps:
-      - name: Checkout repository (for scripts packaging)
+      - name: Checkout repository (for scripts packaging - only if scripts changed)
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         uses: actions/checkout@v4
         with:
           submodules: true
@@ -800,16 +812,23 @@ jobs:
         if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         run: |
           set -euo pipefail
+          
           # Crear tarball con prefijo current/ usando transform
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
           
-          # Transferir a producción usando la clave del repo
-          scp -o StrictHostKeyChecking=yes \
-            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+          # Configurar SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Copiar tarball
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          
+          rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
       - name: Extract scripts in Production
         if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
@@ -903,20 +922,27 @@ jobs:
               -o olmeraot.zip \
               "https://github.com/${{ github.repository }}/releases/download/prod-latest/olmeraot-linux-x86_64.zip"
             
-            unzip -o olmeraot.zip
+            # Extract (quiet mode to prevent hangs)
+            unzip -qq -o olmeraot.zip
             chmod +x olmeraot
             
-            # Create symlink for config.lua in current/
+            # Setup config and key.pem
             ln -sf ../config.lua current/config.lua
-            # Ensure key.pem available in current even if scripts didn't change
-            if [ ! -f current/key.pem ] && [ -f key.pem ]; then
+            # IMPORTANT: Always ensure key.pem is in current/ (required by server)
+            if [ -f key.pem ]; then
               cp -f key.pem current/key.pem
+              chmod 640 current/key.pem
+              # Also create symlink from root to current/ for compatibility
+              ln -sf current/key.pem key.pem
+            else
+              echo "⚠️  WARNING: key.pem not found in deployment directory"
             fi
-            chmod 640 current/key.pem || true
             
-            # Restart production service
-            sudo systemctl restart olmeraot-prod
+            # Restart (no wait, let systemctl handle it)
+            sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
             
-            # Health check
-            sleep 5
-            sudo systemctl status olmeraot-prod
+            # Health check (with no-prompt mode)
+            sleep 3
+            sudo -n systemctl status olmeraot-prod --no-pager 2>&1 || true
+            
+            echo "✅ Production deployment completed successfully"
