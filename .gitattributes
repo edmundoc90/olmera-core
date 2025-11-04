@@ -1,3 +1,13 @@
 # Keep our workflow files on merges (discard incoming changes)
 .github/workflows/** merge=ours
+
+# Keep our custom configurations and overrides
+overrides merge=ours
+.gitmodules merge=ours
+infra/Dockerfile.olmera merge=ours
+data/core.lua merge=ours
+
+# Keep CI/CD documentation
+docs/CI_CD.md merge=ours
+
 text eol=lf
