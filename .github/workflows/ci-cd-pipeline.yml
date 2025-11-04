@@ -811,12 +811,17 @@ jobs:
             unzip -qq -o olmeraot.zip
             chmod +x olmeraot
             
-            # Setup config
+            # Setup config and key.pem
             ln -sf ../config.lua current/config.lua
-            if [ ! -f current/key.pem ] && [ -f key.pem ]; then
+            # IMPORTANT: Always ensure key.pem is in current/ (required by server)
+            if [ -f key.pem ]; then
               cp -f key.pem current/key.pem
+              chmod 640 current/key.pem
+              # Also create symlink from root to current/ for compatibility
+              ln -sf current/key.pem key.pem
+            else
+              echo "⚠️  WARNING: key.pem not found in deployment directory"
             fi
-            chmod 640 current/key.pem || true
             
             # Restart (no wait, let systemctl handle it)
             sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
