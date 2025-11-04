@@ -49,12 +49,12 @@ if(CMAKE_BUILD_TYPE
    "Debug"
 )
     project(
-        olmeraot-debug
+        canary-debug
         LANGUAGES CXX
     )
 else()
     project(
-        olmeraot
+        canary
         LANGUAGES CXX
     )
 endif()
