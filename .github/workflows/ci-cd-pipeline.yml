@@ -245,7 +245,7 @@ jobs:
       - name: Package debug binary
         run: |
           mkdir -p dist
-          cp build/linux-debug/bin/olmeraot dist/olmeraot-debug
+          cp build/linux-debug/bin/olmeraot-debug dist/olmeraot-debug
           cd dist
           zip -r olmeraot-linux-x86_64-debug.zip olmeraot-debug
           sha256sum olmeraot-linux-x86_64-debug.zip > SHA256SUMS-debug
