@@ -28,9 +28,9 @@ jobs:
     name: "Stage 1: Detect Changes"
     runs-on: ubuntu-latest
     outputs:
-      cpp: ${{ steps.filter.outputs.cpp }}
-      scripts: ${{ steps.filter.outputs.scripts }}
-      overrides: ${{ steps.filter.outputs.overrides }}
+      cpp: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.cpp || 'false' }}
+      scripts: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.scripts || 'false' }}
+      overrides: ${{ github.ref != 'refs/heads/main' && steps.filter.outputs.overrides || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +63,7 @@ jobs:
   build:
     name: "Stage 2: Build & Test"
     needs: changes
-    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft)
+    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft) && github.ref != 'refs/heads/main'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -170,7 +170,7 @@ jobs:
   build-debug:
     name: "Stage 2B: Build Debug (Manual)"
     needs: changes
-    if: needs.changes.outputs.cpp == 'true'
+    if: needs.changes.outputs.cpp == 'true' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-22.04
     environment:
       name: debug-build
@@ -269,7 +269,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true'
+      needs.changes.outputs.cpp != 'true' &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
@@ -366,7 +367,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       !cancelled() &&
-      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success')
+      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success') &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -465,7 +467,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' &&
       needs.changes.outputs.cpp == 'true' &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     # NOTA: Environment removido porque GitHub Actions fuerza la ejecución del job
     # cuando existe un environment con deployment branches configuradas, ignorando
@@ -602,7 +605,7 @@ jobs:
     name: "Stage 4: Deploy to Staging"
     needs: [build, deploy-qa]
     # Solo ejecuta si build y deploy-qa tuvieron éxito (no skipped)
-    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' }}
+    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment:
       name: staging-server
