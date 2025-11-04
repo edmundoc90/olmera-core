@@ -791,6 +791,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          request_pty: true
           script: |
             set -euo pipefail
             DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
