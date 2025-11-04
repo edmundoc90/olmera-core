@@ -11,7 +11,6 @@
 
 #include "creatures/creatures_definitions.hpp"
 #include "creatures/players/components/wheel/wheel_definitions.hpp"
-#include "creatures/players/components/wheel/wheel_spells.hpp"
 
 class Creature;
 class IOWheel;

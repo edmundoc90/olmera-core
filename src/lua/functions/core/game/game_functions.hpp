@@ -16,7 +16,6 @@ public:
 private:
 	static int luaGameCreateMonsterType(lua_State* L);
 	static int luaGameCreateNpcType(lua_State* L);
-	static int luaGameGetMonsterTypeByName(lua_State* L);
 
 	static int luaGameGetSpectators(lua_State* L);
 

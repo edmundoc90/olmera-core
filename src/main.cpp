@@ -10,9 +10,6 @@
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
-// Mixed-change test: C++ + Lua → QA deploy then Prod (scripts sync + binary)
-
-#include "canary_server.hpp"
 int main() {
 	return inject<CanaryServer>().run();
 }
