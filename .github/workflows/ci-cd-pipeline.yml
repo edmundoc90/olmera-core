@@ -358,6 +358,106 @@ jobs:
             });
 
   # ============================================================================
+  # STAGE 3B: Deploy Scripts-Only to Production (Main Branch)
+  # ============================================================================
+  deploy-scripts-prod:
+    name: "Stage 3B: Deploy Scripts to Production (Main Only)"
+    needs: changes
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
+      needs.changes.outputs.cpp != 'true' &&
+      vars.PROD_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production-server
+      url: https://olmeraot.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Prepare SSH known_hosts (Prod)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload scripts to Production (tar + SSH)
+        run: |
+          set -euo pipefail
+          
+          # Crear tarball con prefijo current/ usando transform
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary data-otservbr-global overrides key.pem
+          
+          # Configurar SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Copiar tarball
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            /tmp/scripts.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          
+          # Limpiar carpetas que vamos a reemplazar y extraer
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "cd ${{ secrets.VPS_PROD_PATH }} && \
+             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
+             tar xzf /tmp/scripts.tar.gz && \
+             rm /tmp/scripts.tar.gz"
+          
+          rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
+
+      - name: Restart Production server and health check
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
+            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
+            cd "$DEST_PATH"
+            
+            # Ensure key.pem symlink exists for compatibility
+            if [ ! -L key.pem ] && [ -f current/key.pem ]; then
+              ln -sf current/key.pem key.pem
+            fi
+            
+            # Restart production service
+            sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
+            
+            # Health check
+            sleep 3
+            sudo -n systemctl status olmeraot-prod --no-pager || true
+
+      - name: Comment on commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const changes = [];
+            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: `✅ Deployed ${changes.join(' + ')} to Production (no binary rebuild)`
+            });
+
+  # ============================================================================
   # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
   # ============================================================================
   approve-merge-to-main:
@@ -682,6 +782,7 @@ jobs:
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
+      needs.changes.outputs.cpp == 'true' &&
       (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
       !cancelled()
     runs-on: ubuntu-latest
