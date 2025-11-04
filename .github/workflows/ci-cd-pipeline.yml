@@ -306,11 +306,11 @@ jobs:
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
           
-       # Limpiar carpetas que vamos a reemplazar y extraer
-       ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          # Limpiar carpetas que vamos a reemplazar y extraer
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ secrets.VPS_QA_PATH }} && \
-         rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
+             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
              rm /tmp/scripts.tar.gz"
           
