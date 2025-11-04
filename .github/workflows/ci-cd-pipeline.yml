@@ -57,6 +57,12 @@ jobs:
             overrides:
               - 'overrides'
               - 'overrides/**'
+      
+      - name: Debug - Show detected changes
+        run: |
+          echo "cpp: ${{ steps.filter.outputs.cpp }}"
+          echo "scripts: ${{ steps.filter.outputs.scripts }}"
+          echo "overrides: ${{ steps.filter.outputs.overrides }}"
 
   # ============================================================================
   # STAGE 2: Build & Test
@@ -794,7 +800,7 @@ jobs:
       name: production-server
       url: https://olmeraot.com
     steps:
-      - name: Checkout repository (for scripts packaging)
+      - name: Checkout repository (for scripts packaging - only if scripts changed)
         if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         uses: actions/checkout@v4
         with:
@@ -805,16 +811,23 @@ jobs:
         if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         run: |
           set -euo pipefail
+          
           # Crear tarball con prefijo current/ usando transform
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
           
-          # Transferir a producción usando la clave del repo
-          scp -o StrictHostKeyChecking=yes \
-            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+          # Configurar SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Copiar tarball
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          
+          rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
       - name: Extract scripts in Production
         if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
