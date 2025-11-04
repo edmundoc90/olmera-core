@@ -34,7 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          # Don't fetch submodules on main branch (private repo issue)
+          submodules: ${{ github.ref != 'refs/heads/main' }}
           fetch-depth: 2
           token: ${{ secrets.GH_PAT || github.token }}
       
@@ -693,6 +694,7 @@ jobs:
       url: https://olmeraot.com
     steps:
       - name: Checkout repository (for scripts packaging)
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         uses: actions/checkout@v4
         with:
           submodules: true
