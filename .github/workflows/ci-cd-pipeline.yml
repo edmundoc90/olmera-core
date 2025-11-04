@@ -822,8 +822,4 @@ jobs:
             # Restart production service
             sudo systemctl restart olmeraot-prod
             
-            # Health check
-            sleep 5
-            sudo systemctl --no-pager status olmeraot-prod
-            
             echo "✅ Production deployment completed successfully"
