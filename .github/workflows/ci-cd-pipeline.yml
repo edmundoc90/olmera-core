@@ -58,6 +58,63 @@ jobs:
               - 'overrides/**'
 
   # ============================================================================
+  # STAGE 1B: Detect PR Changes on main (isolate what merged PR actually changed)
+  # ============================================================================
+  changes-main-pr:
+    name: "Stage 1B: Detect PR Changes (main only)"
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.detect.outputs.cpp }}
+      scripts: ${{ steps.detect.outputs.scripts }}
+      overrides: ${{ steps.detect.outputs.overrides }}
+    steps:
+      - name: Resolve merged PR and detect file categories
+        id: detect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+
+            // Find PR associated with this commit
+            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
+            const pr = prsResp.data && prsResp.data[0];
+            if (!pr) {
+              core.notice('No PR associated with this commit. Skipping PR-based change detection.');
+              core.setOutput('cpp','false');
+              core.setOutput('scripts','false');
+              core.setOutput('overrides','false');
+              return;
+            }
+
+            // List changed files in the PR
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+
+            const patterns = {
+              cpp: [/^src\//, /^tests\/.*\.cpp$/, /^cmake\//, /^CMakeLists\.txt$/, /^vcpkg\.json$/],
+              scripts: [/^data\/.*\.(lua|xml)$/, /^data-canary\/.*\.(lua|xml)$/, /^data-otservbr-global\//],
+              overrides: [/^overrides(\/|$)/]
+            };
+
+            let cpp = false, scripts = false, overrides = false;
+            for (const f of files) {
+              const path = f.filename;
+              if (patterns.cpp.some(r => r.test(path))) cpp = true;
+              if (patterns.scripts.some(r => r.test(path))) scripts = true;
+              if (patterns.overrides.some(r => r.test(path))) overrides = true;
+            }
+
+            core.setOutput('cpp', cpp ? 'true' : 'false');
+            core.setOutput('scripts', scripts ? 'true' : 'false');
+            core.setOutput('overrides', overrides ? 'true' : 'false');
+            core.summary
+              .addHeading('PR change detection (main)')
+              .addRaw(`cpp=${cpp} scripts=${scripts} overrides=${overrides}`)
+              .write();
+
+  # ============================================================================
   # STAGE 2: Build & Test
   # ============================================================================
   build:
@@ -362,11 +419,11 @@ jobs:
   # ============================================================================
   deploy-scripts-prod:
     name: "Stage 3B: Deploy Scripts to Production (Main Only)"
-    needs: changes
+    needs: changes-main-pr
     if: |
       github.ref == 'refs/heads/main' &&
-      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true' &&
+      (needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true') &&
+      needs.changes-main-pr.outputs.cpp != 'true' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
@@ -448,8 +505,8 @@ jobs:
         with:
           script: |
             const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
+            if ('${{ needs.changes-main-pr.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.changes-main-pr.outputs.overrides }}' === 'true') changes.push('overrides');
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -778,11 +835,11 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [changes, build, deploy-qa]
+    needs: [changes-main-pr, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
       vars.PROD_DEPLOY_ENABLED == 'true' && 
-      needs.changes.outputs.cpp == 'true' &&
+      needs.changes-main-pr.outputs.cpp == 'true' &&
       (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
       !cancelled()
     runs-on: ubuntu-latest
@@ -797,7 +854,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Upload scripts to Production (tar + SSH)
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        if: needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true'
         run: |
           set -euo pipefail
           # Crear tarball con prefijo current/ usando transform
@@ -805,14 +862,17 @@ jobs:
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
           
-          # Transferir a producción usando la clave del repo
-          scp -o StrictHostKeyChecking=yes \
-            -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
+          # Transfer using a temp SSH key file (avoids /dev/fd/* issues)
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          rm -f ~/.ssh/deploy_key
 
       - name: Extract scripts in Production
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        if: needs.changes-main-pr.outputs.scripts == 'true' || needs.changes-main-pr.outputs.overrides == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
