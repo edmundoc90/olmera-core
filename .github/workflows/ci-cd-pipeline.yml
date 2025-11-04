@@ -678,11 +678,11 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [changes, build, deploy-qa]
+    # Make this job independent - it will use existing qa-latest release
+    needs: [changes]
     if: |
       github.ref == 'refs/heads/main' && 
-      vars.PROD_DEPLOY_ENABLED == 'true' && 
-      (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
+      vars.PROD_DEPLOY_ENABLED == 'true' &&
       !cancelled()
     runs-on: ubuntu-latest
     environment:
