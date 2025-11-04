@@ -22,7 +22,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Prepare git user
@@ -38,7 +37,6 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           BASE_BRANCH="main"
           RELEASE_BRANCH="release/pr-${PR_NUMBER}"
-          MERGE_BASE_SHA="${{ github.event.pull_request.base.sha }}"
 
           # Ensure we have both branches locally
           git fetch origin "$BASE_BRANCH":"refs/remotes/origin/$BASE_BRANCH" || true
@@ -47,25 +45,17 @@ jobs:
           # Create release branch from main
           git switch -c "$RELEASE_BRANCH" "origin/$BASE_BRANCH"
 
-          # Generate diff using git (includes submodules like 'overrides')
-          # Compare merge-base of feature branch with the PR's base (develop)
-          git diff --no-ext-diff "$MERGE_BASE_SHA"..HEAD > /tmp/pr-${PR_NUMBER}.diff
+          # Download PR diff (unified patch)
+          curl -fsSL -H "Authorization: token ${{ github.token }}" \
+            -L "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}.diff" \
+            -o /tmp/pr-${PR_NUMBER}.diff
 
           # Try to apply with 3-way to maximize success
-          if git apply --3way --index /tmp/pr-${PR_NUMBER}.diff 2>&1 | tee /tmp/apply-output.txt; then
+          if git apply --3way --index /tmp/pr-${PR_NUMBER}.diff; then
             git commit -m "chore(release): apply changes from PR #${PR_NUMBER} onto ${BASE_BRANCH}"
-            echo "success=true" >> "$GITHUB_OUTPUT"
           else
-            APPLY_OUTPUT=$(cat /tmp/apply-output.txt)
-            if echo "$APPLY_OUTPUT" | grep -q "No valid patches"; then
-              echo "::warning::No patches found in diff. PR may contain only metadata changes."
-              echo "success=false" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              echo "::error::Could not apply diff automatically. Conflicts need manual resolution."
-              echo "$APPLY_OUTPUT" | head -20
-              exit 2
-            fi
+            echo "::error::Could not apply diff automatically. Conflicts need manual resolution."
+            exit 2
           fi
 
           # Push release branch
