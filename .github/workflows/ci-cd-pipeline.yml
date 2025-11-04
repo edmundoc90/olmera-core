@@ -824,4 +824,6 @@ jobs:
             
             # Health check
             sleep 5
-            sudo systemctl status olmeraot-prod
+            sudo systemctl --no-pager status olmeraot-prod
+            
+            echo "✅ Production deployment completed successfully"
