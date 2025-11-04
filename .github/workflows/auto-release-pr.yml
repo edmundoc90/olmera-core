@@ -1,0 +1,113 @@
+name: Auto Release PR (only feature changes)
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - develop
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-release-pr:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auto-release-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Prepare git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create release branch from main and apply PR diff
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          BASE_BRANCH="main"
+          RELEASE_BRANCH="release/pr-${PR_NUMBER}"
+
+          # Ensure we have both branches locally
+          git fetch origin "$BASE_BRANCH":"refs/remotes/origin/$BASE_BRANCH" || true
+          git fetch origin develop:refs/remotes/origin/develop || true
+
+          # Create release branch from main
+          git switch -c "$RELEASE_BRANCH" "origin/$BASE_BRANCH"
+
+          # Download PR diff (unified patch)
+          curl -fsSL -H "Authorization: token ${{ github.token }}" \
+            -L "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}.diff" \
+            -o /tmp/pr-${PR_NUMBER}.diff
+
+          # Try to apply with 3-way to maximize success
+          if git apply --3way --index /tmp/pr-${PR_NUMBER}.diff; then
+            git commit -m "chore(release): apply changes from PR #${PR_NUMBER} onto ${BASE_BRANCH}"
+          else
+            echo "::error::Could not apply diff automatically. Conflicts need manual resolution."
+            exit 2
+          fi
+
+          # Push release branch
+          git push origin "$RELEASE_BRANCH"
+          echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR to main
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const base = 'main';
+            const head = '${{ steps.create.outputs.branch }}';
+            const srcPR = context.payload.pull_request.number;
+            const title = `Release: PR #${srcPR} to main (only feature changes)`;
+            const body = `Automated release PR created from merged develop PR #${srcPR}.\n\nThis PR contains only the changes from that feature, applied onto main.\n\nIf checks pass, merge with Squash.`;
+
+            // Avoid duplicates if re-run
+            const { data: existing } = await github.rest.pulls.list({ owner, repo, state: 'open', base, head: `${owner}:${head}` });
+            let pr;
+            if (existing.length) {
+              pr = existing[0];
+            } else {
+              pr = (await github.rest.pulls.create({ owner, repo, base, head, title, body })).data;
+            }
+
+            try { await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['prod-promotion', 'auto-release'] }); } catch { }
+            core.setOutput('pr_number', pr.number.toString());
+
+      - name: Comment on source PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const srcPR = context.payload.pull_request.number;
+            const branch = '${{ steps.create.outputs.branch }}';
+            const msg = `📦 Se creó la rama \`${branch}\` y un PR hacia \`main\` con solo los cambios de este PR.`;
+            try { await github.rest.issues.createComment({ owner, repo, issue_number: srcPR, body: msg }); } catch (e) { core.warning(e.message); }
+
+      - name: Report patch failure on source PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const srcPR = context.payload.pull_request.number;
+            const msg = `⚠️ No se pudo aplicar automáticamente el patch de este PR sobre \`main\`.\n\n` +
+                       `Crea manualmente una rama \`release/pr-${srcPR}\` desde \`main\` y realiza cherry-pick o resuelve conflictos. ` +
+                       `Luego abre un PR a \`main\`.`;
+            try { await github.rest.issues.createComment({ owner, repo, issue_number: srcPR, body: msg }); } catch (e) { core.warning(e.message); }
