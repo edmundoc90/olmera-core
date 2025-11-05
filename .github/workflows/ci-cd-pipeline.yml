@@ -394,6 +394,9 @@ jobs:
             "cd ${{ secrets.VPS_QA_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
+             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
+             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
+             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -491,6 +494,9 @@ jobs:
             "cd ${{ secrets.VPS_PROD_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
+             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
+             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
+             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -735,6 +741,9 @@ jobs:
             "cd ${{ secrets.VPS_QA_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
+             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
+             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
+             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -916,6 +925,9 @@ jobs:
             cd "$DEST_PATH"
             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides
             tar xzf /tmp/scripts.tar.gz
+            if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi
+            if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi
+            if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi
             ln -sf ../config.lua current/config.lua
             chmod 640 current/key.pem || true
             rm -f /tmp/scripts.tar.gz
