@@ -1,0 +1,9 @@
+# Workflow disabled
+#
+# Formerly: analysis-reviewdog-cppcheck.yml
+# Reason: temporarily paused to save CI minutes.
+#
+# To re-enable:
+#   1. Rename this file back to `.yml`.
+#   2. Adjust triggers if necessary.
+#   3. Commit and push the change.
