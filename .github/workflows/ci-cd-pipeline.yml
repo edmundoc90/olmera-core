@@ -1002,7 +1002,12 @@ jobs:
             ln -sf ../config.lua current/config.lua
             # IMPORTANT: Always ensure key.pem is in current/ (required by server)
             if [ -f key.pem ]; then
-              cp -f key.pem current/key.pem
+              mkdir -p current
+              src_real=$(readlink -f key.pem 2>/dev/null || echo "")
+              dest_real=$(readlink -f current/key.pem 2>/dev/null || echo "")
+              if [ "$src_real" != "$dest_real" ]; then
+                cp -f key.pem current/key.pem
+              fi
               chmod 640 current/key.pem
               # Also create symlink from root to current/ for compatibility
               ln -sf current/key.pem key.pem
