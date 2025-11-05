@@ -108,44 +108,44 @@ jobs:
           # Create release branch from main
           git switch -c "$RELEASE_BRANCH" "origin/$BASE_BRANCH"
 
-          # Identify changes introduced by the merged PR
-          MERGE_BASE=$(git merge-base origin/develop HEAD)
+          owner=$(cut -d/ -f1 <<< "${GITHUB_REPOSITORY}")
+          repo=$(cut -d/ -f2 <<< "${GITHUB_REPOSITORY}")
+          export GH_TOKEN="${GITHUB_TOKEN}"
 
-          mapfile -t DIFF_STATUS < <(git diff --name-status "$MERGE_BASE"..origin/develop)
-          if [ "${#DIFF_STATUS[@]}" -eq 0 ]; then
-            echo "::warning::No file changes detected between main and develop."
+          mapfile -t PR_FILES < <(gh api "repos/${owner}/${repo}/pulls/${PR_NUMBER}/files" --paginate \
+            --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv')
+
+          if [ "${#PR_FILES[@]}" -eq 0 ]; then
+            echo "::warning::No files returned for PR #${PR_NUMBER}."
             echo "success=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          # Replay only the files touched by the PR
-          for entry in "${DIFF_STATUS[@]}"; do
-            status=${entry%%$'\t'*}
-            rest=${entry#*$'\t'}
-
+          for entry in "${PR_FILES[@]}"; do
+            IFS=$'\t' read -r status filename previous <<<"$entry"
             case "$status" in
-              A|C|M|T)
-                git checkout origin/develop -- "$rest"
+              added|modified|changed|copied)
+                git checkout origin/develop -- "$filename"
                 ;;
-              D)
-                git rm -- "$rest"
+              removed)
+                git rm -- "$filename"
                 ;;
-              R*)
-                src=${rest%%$'\t'*}
-                dst=${rest#*$'\t'}
-                git rm -- "$src"
-                git checkout origin/develop -- "$dst"
+              renamed)
+                if [ -n "$previous" ]; then
+                  git rm -- "$previous" || true
+                fi
+                git checkout origin/develop -- "$filename"
                 ;;
               *)
-                echo "::warning::Unhandled change type '$status' for path '$rest'."
-                git checkout origin/develop -- "$rest" || true
+                echo "::warning::Unhandled file status '$status' for $filename."
+                git checkout origin/develop -- "$filename" || true
                 ;;
             esac
           done
 
           git add -A
           if git diff --cached --quiet; then
-            echo "::warning::No staged changes after applying PR diff."
+            echo "::warning::No staged changes after applying PR file list."
             echo "success=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
