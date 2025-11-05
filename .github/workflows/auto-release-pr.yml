@@ -65,32 +65,52 @@ jobs:
           # Create release branch from main
           git switch -c "$RELEASE_BRANCH" "origin/$BASE_BRANCH"
 
-          # Get the merge-base (where feature branch started from develop)
+          # Identify changes introduced by the merged PR
           MERGE_BASE=$(git merge-base origin/develop HEAD)
-          
-          # Generate diff using git (includes submodules like 'overrides')
-          git diff --no-ext-diff "$MERGE_BASE"..origin/develop > /tmp/pr-${PR_NUMBER}.diff
 
-          # Try to apply with 3-way to maximize success
-          if git apply --3way --index /tmp/pr-${PR_NUMBER}.diff 2>&1 | tee /tmp/apply-output.txt; then
-            git commit -m "chore(release): apply changes from PR #${PR_NUMBER} onto ${BASE_BRANCH}"
-            echo "success=true" >> "$GITHUB_OUTPUT"
-          else
-            APPLY_OUTPUT=$(cat /tmp/apply-output.txt)
-            if echo "$APPLY_OUTPUT" | grep -q "No valid patches"; then
-              echo "::warning::No patches found in diff. PR may contain only metadata changes."
-              echo "success=false" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              echo "::error::Could not apply diff automatically. Conflicts need manual resolution."
-              echo "$APPLY_OUTPUT" | head -20
-              exit 2
-            fi
+          mapfile -t DIFF_STATUS < <(git diff --name-status "$MERGE_BASE"..origin/develop)
+          if [ "${#DIFF_STATUS[@]}" -eq 0 ]; then
+            echo "::warning::No file changes detected between main and develop."
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-          # Push release branch
+          # Replay only the files touched by the PR
+          for entry in "${DIFF_STATUS[@]}"; do
+            status=${entry%%$'\t'*}
+            rest=${entry#*$'\t'}
+
+            case "$status" in
+              A|C|M|T)
+                git checkout origin/develop -- "$rest"
+                ;;
+              D)
+                git rm -- "$rest"
+                ;;
+              R*)
+                src=${rest%%$'\t'*}
+                dst=${rest#*$'\t'}
+                git rm -- "$src"
+                git checkout origin/develop -- "$dst"
+                ;;
+              *)
+                echo "::warning::Unhandled change type '$status' for path '$rest'."
+                git checkout origin/develop -- "$rest" || true
+                ;;
+            esac
+          done
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::warning::No staged changes after applying PR diff."
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          git commit -m "chore(release): apply changes from PR #${PR_NUMBER} onto ${BASE_BRANCH}"
           git push origin "$RELEASE_BRANCH"
           echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "success=true" >> "$GITHUB_OUTPUT"
 
       - name: Open PR to main
         if: steps.release.outputs.success == 'true'
@@ -136,7 +156,11 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const srcPR = context.payload.pull_request.number;
+            const srcPR = '${{ steps.create.outputs.pr_number || '' }}';
+            if (!srcPR) {
+              core.warning('Unable to determine source PR number for failure notification.');
+              return;
+            }
             const msg = `⚠️ No se pudo aplicar automáticamente el patch de este PR sobre \`main\`.\n\n` +
                        `Crea manualmente una rama \`release/pr-${srcPR}\` desde \`main\` y realiza cherry-pick o resuelve conflictos. ` +
                        `Luego abre un PR a \`main\`.`;
