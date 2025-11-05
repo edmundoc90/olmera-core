@@ -4,6 +4,7 @@
 --]]
 
 local command = TalkAction("/feature")
+command:groupType("god")
 
 function command.onSay(player, words, param)
 	if not player:getGroup():hasFlag(PlayerFlag_CanEditFeatures) then
