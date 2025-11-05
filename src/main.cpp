@@ -11,7 +11,7 @@
 #include "lib/di/container.hpp"
 
 // Olmera OT Server - Custom Build
-// Testing complete CI/CD pipeline to production
+// Testing complete CI/CD pipeline to production (C++ change marker)
 int main() {
 	return inject<CanaryServer>().run();
 }
