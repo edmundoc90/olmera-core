@@ -82,4 +82,5 @@ Dependencies: %s
 	return false
 end
 
+command:groupType("god")
 command:register()
