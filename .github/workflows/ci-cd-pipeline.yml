@@ -65,6 +65,74 @@ jobs:
           echo "overrides: ${{ steps.filter.outputs.overrides }}"
 
   # ============================================================================
+  # STAGE 1B: Detect PR Changes (for main branch - isolate merged PR changes)
+  # ============================================================================
+  detect-pr-changes-main:
+    name: "Stage 1B: Detect PR Changes (main)"
+    # Run on all branches but only detect when on main
+    # This ensures the check shows up in branch protection options
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.detect.outputs.cpp }}
+      scripts: ${{ steps.detect.outputs.scripts }}
+      overrides: ${{ steps.detect.outputs.overrides }}
+    steps:
+      - name: Resolve merged PR and detect file categories
+        id: detect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+            const ref = context.ref;
+
+            // Only detect on main; on other branches, output false
+            if (!ref.endsWith('main')) {
+              core.notice('Not on main branch. Skipping PR-based detection.');
+              core.setOutput('cpp','false');
+              core.setOutput('scripts','false');
+              core.setOutput('overrides','false');
+              return;
+            }
+
+            // Find PR associated with this commit
+            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
+            const pr = prsResp.data && prsResp.data[0];
+            if (!pr) {
+              core.notice('No PR associated with this commit. Skipping PR-based change detection.');
+              core.setOutput('cpp','false');
+              core.setOutput('scripts','false');
+              core.setOutput('overrides','false');
+              return;
+            }
+
+            // List changed files in the PR
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+
+            const patterns = {
+              cpp: [/^src\//, /^tests\/.*\.cpp$/, /^cmake\//, /^CMakeLists\.txt$/, /^vcpkg\.json$/],
+              scripts: [/^data\/.*\.(lua|xml)$/, /^data-canary\/.*\.(lua|xml)$/, /^data-otservbr-global\//],
+              overrides: [/^overrides(\/|$)/]
+            };
+
+            let cpp = false, scripts = false, overrides = false;
+            for (const f of files) {
+              const path = f.filename;
+              if (patterns.cpp.some(r => r.test(path))) cpp = true;
+              if (patterns.scripts.some(r => r.test(path))) scripts = true;
+              if (patterns.overrides.some(r => r.test(path))) overrides = true;
+            }
+
+            core.setOutput('cpp', cpp ? 'true' : 'false');
+            core.setOutput('scripts', scripts ? 'true' : 'false');
+            core.setOutput('overrides', overrides ? 'true' : 'false');
+            core.summary
+              .addHeading('PR change detection (main)')
+              .addRaw(`cpp=${cpp} scripts=${scripts} overrides=${overrides}`)
+              .write();
+
+  # ============================================================================
   # STAGE 2: Build & Test
   # ============================================================================
   build:
@@ -370,11 +438,11 @@ jobs:
   # ============================================================================
   deploy-scripts-prod:
     name: "Stage 3B: Deploy Scripts to Production (Main Only)"
-    needs: changes
+    needs: detect-pr-changes-main
     if: |
       github.ref == 'refs/heads/main' &&
-      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true' &&
+      (needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true') &&
+      needs.detect-pr-changes-main.outputs.cpp != 'true' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
@@ -456,8 +524,8 @@ jobs:
         with:
           script: |
             const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
+            if ('${{ needs.detect-pr-changes-main.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.detect-pr-changes-main.outputs.overrides }}' === 'true') changes.push('overrides');
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -466,12 +534,17 @@ jobs:
             });
 
   # ============================================================================
-  # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
+  # STAGE 4A: Approve and Merge to Main (DEPRECATED - Use auto-release-pr instead)
   # ============================================================================
+  # This job is deprecated in favor of auto-release-pr.yml which creates
+  # PRs to main containing ONLY the merged feature's changes (not all of develop).
+  # Kept for reference but disabled by default.
+  # To enable: set vars.USE_OLD_DEVELOP_TO_MAIN_FLOW = 'true'
   approve-merge-to-main:
-    name: "Stage 4A: Approve Merge to Main"
+    name: "Stage 4A: Approve Merge to Main [DEPRECATED]"
     needs: [changes, sync-scripts-qa, deploy-qa]
     if: |
+      false &&
       github.ref == 'refs/heads/develop' &&
       !cancelled() &&
       (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success') &&
@@ -788,12 +861,12 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    # Make this job independent - it will use existing qa-latest release
-    needs: [changes]
+    needs: [detect-pr-changes-main, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
-      vars.PROD_DEPLOY_ENABLED == 'true' &&
-      needs.changes.outputs.cpp == 'true' &&
+      vars.PROD_DEPLOY_ENABLED == 'true' && 
+      needs.detect-pr-changes-main.outputs.cpp == 'true' &&
+      (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
       !cancelled()
     runs-on: ubuntu-latest
     environment:
@@ -808,7 +881,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Upload scripts to Production (tar + SSH)
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
         run: |
           set -euo pipefail
           
@@ -830,7 +903,7 @@ jobs:
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
       - name: Extract scripts in Production
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -929,7 +1002,12 @@ jobs:
             ln -sf ../config.lua current/config.lua
             # IMPORTANT: Always ensure key.pem is in current/ (required by server)
             if [ -f key.pem ]; then
-              cp -f key.pem current/key.pem
+              mkdir -p current
+              src_real=$(readlink -f key.pem 2>/dev/null || echo "")
+              dest_real=$(readlink -f current/key.pem 2>/dev/null || echo "")
+              if [ "$src_real" != "$dest_real" ]; then
+                cp -f key.pem current/key.pem
+              fi
               chmod 640 current/key.pem
               # Also create symlink from root to current/ for compatibility
               ln -sf current/key.pem key.pem
