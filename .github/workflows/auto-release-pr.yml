@@ -36,15 +36,58 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = context.sha;
-            
-            // Find PR associated with this commit
-            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
-            const pr = prsResp.data && prsResp.data[0];
-            if (!pr || !pr.merged) {
+
+            async function getPrFromAssociatedCommit() {
+              const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
+              if (!prsResp.data?.length) {
+                return null;
+              }
+              return prsResp.data.find(p => p.merged) || null;
+            }
+
+            async function getPrFromCommitMessages() {
+              const numbers = new Set();
+              const regex = /\(#(\d+)\)/g;
+
+              const collect = (message) => {
+                if (!message) return;
+                let match;
+                while ((match = regex.exec(message)) !== null) {
+                  numbers.add(Number(match[1]));
+                }
+              };
+
+              collect(context.payload.head_commit?.message);
+              for (const commit of context.payload.commits || []) {
+                collect(commit.message);
+              }
+
+              for (const prNumber of numbers) {
+                try {
+                  const { data } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+                  if (data.merged) {
+                    core.info(`Using PR #${prNumber} from commit message fallback.`);
+                    return data;
+                  }
+                } catch (error) {
+                  core.warning(`Could not fetch PR #${prNumber} during fallback lookup: ${error.message}`);
+                }
+              }
+              return null;
+            }
+
+            let pr = await getPrFromAssociatedCommit();
+            if (pr) {
+              core.info(`Using PR #${pr.number} from commit association.`);
+            } else {
+              pr = await getPrFromCommitMessages();
+            }
+
+            if (!pr) {
               core.notice('No merged PR associated with this commit. Skipping auto-release.');
               return;
             }
-            
+
             core.setOutput('pr_number', pr.number.toString());
             core.setOutput('pr_merged', 'true');
 
