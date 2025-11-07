@@ -82712,6 +82712,12 @@ Granted by TibiaGoals.com"/>
 		<attribute key="type" value="door"/>
 		<attribute key="blockProjectile" value="1"/>
 	</item>
+	<item id="45000" article="a" name="magic roulette kit">
+		<attribute key="primarytype" value="containers"/>
+		<attribute key="description" value="Unwrap this kit inside your house to install your personal magic roulette lever."/>
+		<attribute key="containersize" value="8"/>
+		<attribute key="weight" value="0"/>
+	</item>
 	<item id="50285" article="an" name="open gate">
 		<attribute key="primarytype" value="doors"/>
 		<attribute key="type" value="door"/>
