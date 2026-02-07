@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
-      - develop
+      - qa
       - main
 
 concurrency:
@@ -54,8 +54,8 @@ jobs:
               - 'data/**/*.xml'
               - 'data-canary/**/*.lua'
               - 'data-canary/**/*.xml'
+              - 'data-otservbr-global/**'
             overrides:
-              - 'overrides'
               - 'overrides/**'
       
       - name: Debug - Show detected changes
@@ -63,74 +63,6 @@ jobs:
           echo "cpp: ${{ steps.filter.outputs.cpp }}"
           echo "scripts: ${{ steps.filter.outputs.scripts }}"
           echo "overrides: ${{ steps.filter.outputs.overrides }}"
-
-  # ============================================================================
-  # STAGE 1B: Detect PR Changes (for main branch - isolate merged PR changes)
-  # ============================================================================
-  detect-pr-changes-main:
-    name: "Stage 1B: Detect PR Changes (main)"
-    # Run on all branches but only detect when on main
-    # This ensures the check shows up in branch protection options
-    runs-on: ubuntu-latest
-    outputs:
-      cpp: ${{ steps.detect.outputs.cpp }}
-      scripts: ${{ steps.detect.outputs.scripts }}
-      overrides: ${{ steps.detect.outputs.overrides }}
-    steps:
-      - name: Resolve merged PR and detect file categories
-        id: detect
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const sha = context.sha;
-            const ref = context.ref;
-
-            // Only detect on main; on other branches, output false
-            if (!ref.endsWith('main')) {
-              core.notice('Not on main branch. Skipping PR-based detection.');
-              core.setOutput('cpp','false');
-              core.setOutput('scripts','false');
-              core.setOutput('overrides','false');
-              return;
-            }
-
-            // Find PR associated with this commit
-            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
-            const pr = prsResp.data && prsResp.data[0];
-            if (!pr) {
-              core.notice('No PR associated with this commit. Skipping PR-based change detection.');
-              core.setOutput('cpp','false');
-              core.setOutput('scripts','false');
-              core.setOutput('overrides','false');
-              return;
-            }
-
-            // List changed files in the PR
-            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
-
-            const patterns = {
-              cpp: [/^src\//, /^tests\/.*\.cpp$/, /^cmake\//, /^CMakeLists\.txt$/, /^vcpkg\.json$/],
-              scripts: [/^data\/.*\.(lua|xml)$/, /^data-canary\/.*\.(lua|xml)$/, /^data-otservbr-global\//],
-              overrides: [/^overrides(\/|$)/]
-            };
-
-            let cpp = false, scripts = false, overrides = false;
-            for (const f of files) {
-              const path = f.filename;
-              if (patterns.cpp.some(r => r.test(path))) cpp = true;
-              if (patterns.scripts.some(r => r.test(path))) scripts = true;
-              if (patterns.overrides.some(r => r.test(path))) overrides = true;
-            }
-
-            core.setOutput('cpp', cpp ? 'true' : 'false');
-            core.setOutput('scripts', scripts ? 'true' : 'false');
-            core.setOutput('overrides', overrides ? 'true' : 'false');
-            core.summary
-              .addHeading('PR change detection (main)')
-              .addRaw(`cpp=${cpp} scripts=${scripts} overrides=${overrides}`)
-              .write();
 
   # ============================================================================
   # STAGE 2: Build & Test
@@ -342,7 +274,7 @@ jobs:
     name: "Stage 3A: Sync Scripts to QA"
     needs: changes
     if: |
-      github.ref == 'refs/heads/develop' &&
+      github.ref == 'refs/heads/qa' &&
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
       needs.changes.outputs.cpp != 'true' &&
       github.ref != 'refs/heads/main'
@@ -394,9 +326,6 @@ jobs:
             "cd ${{ secrets.VPS_QA_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
-             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
-             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
-             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -441,11 +370,11 @@ jobs:
   # ============================================================================
   deploy-scripts-prod:
     name: "Stage 3B: Deploy Scripts to Production (Main Only)"
-    needs: detect-pr-changes-main
+    needs: changes
     if: |
       github.ref == 'refs/heads/main' &&
-      (needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true') &&
-      needs.detect-pr-changes-main.outputs.cpp != 'true' &&
+      (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
+      needs.changes.outputs.cpp != 'true' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
@@ -494,9 +423,6 @@ jobs:
             "cd ${{ secrets.VPS_PROD_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
-             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
-             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
-             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -530,8 +456,8 @@ jobs:
         with:
           script: |
             const changes = [];
-            if ('${{ needs.detect-pr-changes-main.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.detect-pr-changes-main.outputs.overrides }}' === 'true') changes.push('overrides');
+            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
+            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -540,18 +466,13 @@ jobs:
             });
 
   # ============================================================================
-  # STAGE 4A: Approve and Merge to Main (DEPRECATED - Use auto-release-pr instead)
+  # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
   # ============================================================================
-  # This job is deprecated in favor of auto-release-pr.yml which creates
-  # PRs to main containing ONLY the merged feature's changes (not all of develop).
-  # Kept for reference but disabled by default.
-  # To enable: set vars.USE_OLD_DEVELOP_TO_MAIN_FLOW = 'true'
   approve-merge-to-main:
-    name: "Stage 4A: Approve Merge to Main [DEPRECATED]"
+    name: "Stage 4A: Approve Merge to Main"
     needs: [changes, sync-scripts-qa, deploy-qa]
     if: |
-      false &&
-      github.ref == 'refs/heads/develop' &&
+      github.ref == 'refs/heads/qa' &&
       !cancelled() &&
       (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success') &&
       github.ref != 'refs/heads/main'
@@ -562,14 +483,14 @@ jobs:
       issues: write
     environment:
       name: approve-production
-      url: https://github.com/${{ github.repository }}/compare/main...develop
+      url: https://github.com/${{ github.repository }}/compare/main...qa
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || github.token }}
 
-      - name: Create or update PR develop → main
+      - name: Create or update PR qa → main
         id: pr
         uses: actions/github-script@v7
         with:
@@ -577,12 +498,34 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const base = 'main';
-            const head = `${owner}:develop`;
+            const head = `${owner}:qa`;
             // Find existing open PR
-            const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', base, head });
+            const { data: prs } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              base,
+              head,
+              per_page: 100
+            });
+
             let pr = prs[0];
+
+            // Close any older duplicates to ensure only one PR stays open
+            if (prs.length > 1) {
+              for (const duplicate of prs.slice(1)) {
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number: duplicate.number,
+                  state: 'closed'
+                });
+                core.info(`Closed duplicate qa→main PR #${duplicate.number}`);
+              }
+            }
+
             if (!pr) {
-              pr = (await github.rest.pulls.create({ owner, repo, base, head: 'develop', title: 'Promote develop to main', body: 'Auto-created after QA approval' })).data;
+              pr = (await github.rest.pulls.create({ owner, repo, base, head: 'qa', title: 'Promote qa to main', body: 'Auto-created after QA approval' })).data;
             }
             core.setOutput('number', pr.number.toString());
             core.setOutput('node_id', pr.node_id);
@@ -651,7 +594,7 @@ jobs:
     needs: [changes, build]
     # Solo ejecuta si build realmente se ejecutó exitosamente
     if: |
-      github.ref == 'refs/heads/develop' &&
+      github.ref == 'refs/heads/qa' &&
       needs.changes.outputs.cpp == 'true' &&
       needs.build.result == 'success' &&
       github.ref != 'refs/heads/main'
@@ -699,7 +642,7 @@ jobs:
           body: |
             🚀 **QA Release**
             
-            **Branch:** develop
+            **Branch:** qa
             **Commit:** ${{ github.sha }}
             **Built at:** ${{ github.event.head_commit.timestamp }}
             
@@ -741,9 +684,6 @@ jobs:
             "cd ${{ secrets.VPS_QA_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
              tar xzf /tmp/scripts.tar.gz && \
-             if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi && \
-             if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi && \
-             if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi && \
              rm /tmp/scripts.tar.gz"
           
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
@@ -870,11 +810,13 @@ jobs:
   # ============================================================================
   promote-production:
     name: "Stage 5B: Promote Binary to Production"
-    needs: [detect-pr-changes-main, build, deploy-qa]
+    # Promote tested QA artifact without rebuilding; waits for QA jobs to finish
+    needs: [changes, build, deploy-qa]
     if: |
       github.ref == 'refs/heads/main' && 
-      vars.PROD_DEPLOY_ENABLED == 'true' && 
-      needs.detect-pr-changes-main.outputs.cpp == 'true' &&
+      vars.PROD_DEPLOY_ENABLED == 'true' &&
+      needs.changes.outputs.cpp == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
       (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
       !cancelled()
     runs-on: ubuntu-latest
@@ -890,7 +832,7 @@ jobs:
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Upload scripts to Production (tar + SSH)
-        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         run: |
           set -euo pipefail
           
@@ -912,7 +854,7 @@ jobs:
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
       - name: Extract scripts in Production
-        if: needs.detect-pr-changes-main.outputs.scripts == 'true' || needs.detect-pr-changes-main.outputs.overrides == 'true'
+        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -925,9 +867,6 @@ jobs:
             cd "$DEST_PATH"
             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides
             tar xzf /tmp/scripts.tar.gz
-            if [ -d current/overrides/data ]; then rsync -a current/overrides/data/ current/data/; fi
-            if [ -d current/overrides/data-canary ]; then rsync -a current/overrides/data-canary/ current/data-canary/; fi
-            if [ -d current/overrides/data-otservbr-global ]; then rsync -a current/overrides/data-otservbr-global/ current/data-otservbr-global/; fi
             ln -sf ../config.lua current/config.lua
             chmod 640 current/key.pem || true
             rm -f /tmp/scripts.tar.gz
