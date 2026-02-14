@@ -1,6 +1,6 @@
 /**
  * Canary - A free and open-source MMORPG server emulator
- * Copyright (©) 2019-2024 OpenTibiaBR <opentibiabr@outlook.com>
+ * Copyright (©) 2019–present OpenTibiaBR <opentibiabr@outlook.com>
  * Repository: https://github.com/opentibiabr/canary
  * License: https://github.com/opentibiabr/canary/blob/main/LICENSE
  * Contributors: https://github.com/opentibiabr/canary/graphs/contributors
@@ -42,6 +42,7 @@ enum ConfigKey_t : uint16_t {
 	CLASSIC_ATTACK_SPEED,
 	CLEAN_PROTECTION_ZONES,
 	COMBAT_CHAIN_DELAY,
+	COMBAT_CHAIN_SKILL_FORMULA_FIST,
 	COMBAT_CHAIN_SKILL_FORMULA_AXE,
 	COMBAT_CHAIN_SKILL_FORMULA_CLUB,
 	COMBAT_CHAIN_SKILL_FORMULA_SWORD,
@@ -159,7 +160,6 @@ enum ConfigKey_t : uint16_t {
 	MAX_PLAYERS_OUTSIDE_PZ_PER_ACCOUNT,
 	MAX_PLAYERS_PER_ACCOUNT,
 	MAX_PLAYERS,
-	MAX_SPEED_ATTACKONFIST,
 	METRICS_ENABLE_OSTREAM,
 	METRICS_ENABLE_PROMETHEUS,
 	METRICS_OSTREAM_INTERVAL,
@@ -171,7 +171,6 @@ enum ConfigKey_t : uint16_t {
 	MOMENTUM_CHANCE_FORMULA_B,
 	MOMENTUM_CHANCE_FORMULA_C,
 	MONTH_KILLS_TO_RED,
-	MULTIPLIER_ATTACKONFIST,
 	MYSQL_DB,
 	MYSQL_DB_BACKUP,
 	MYSQL_HOST,
@@ -290,7 +289,6 @@ enum ConfigKey_t : uint16_t {
 	TIBIADROME_CONCOCTION_COOLDOWN,
 	TIBIADROME_CONCOCTION_DURATION,
 	TIBIADROME_CONCOCTION_TICK_TYPE,
-	TOGGLE_ATTACK_SPEED_ONFIST,
 	TOGGLE_CHAIN_SYSTEM,
 	TOGGLE_DOWNLOAD_MAP,
 	TOGGLE_FREE_QUEST,
