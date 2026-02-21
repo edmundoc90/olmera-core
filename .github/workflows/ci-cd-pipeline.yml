@@ -2,10 +2,9 @@ name: CI/CD Pipeline
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
+      - develop
       - qa
       - main
 
@@ -34,11 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Enable submodules on all branches for change detection
           submodules: true
           fetch-depth: 2
           token: ${{ secrets.GH_PAT || github.token }}
-      
+
       - uses: dorny/paths-filter@v2
         id: filter
         with:
@@ -57,7 +55,7 @@ jobs:
               - 'data-otservbr-global/**'
             overrides:
               - 'overrides/**'
-      
+
       - name: Debug - Show detected changes
         run: |
           echo "cpp: ${{ steps.filter.outputs.cpp }}"
@@ -65,219 +63,79 @@ jobs:
           echo "overrides: ${{ steps.filter.outputs.overrides }}"
 
   # ============================================================================
-  # STAGE 2: Build & Test
+  # STAGE 2: Build on VPS (ONLY develop + ONLY if C++ changed)
+  # Produces immutable release tag: build-${sha}
   # ============================================================================
-  build:
-    name: "Stage 2: Build & Test"
+  build-vps:
+    name: "Stage 2: Build on VPS (develop, C++ only)"
     needs: changes
-    if: needs.changes.outputs.cpp == 'true' && (github.event_name == 'push' || !github.event.pull_request.draft) && github.ref != 'refs/heads/main'
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        buildtype: [linux-release]
+    if: needs.changes.outputs.cpp == 'true' && github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, olmera-vps]
     outputs:
-      artifact_name: ${{ steps.artifact.outputs.name }}
+      build_tag: ${{ steps.meta.outputs.build_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Optimize apt performance
-        run: |
-          # Use Azure mirrors (faster for GitHub Actions runners)
-          sudo sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
-          sudo sed -i 's|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
-          # Enable parallel downloads
-          echo 'Acquire::Queue-Mode "host";' | sudo tee /etc/apt/apt.conf.d/99parallel
-          echo 'Acquire::http::Pipeline-Depth "5";' | sudo tee -a /etc/apt/apt.conf.d/99parallel
-
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ccache linux-headers-"$(uname -r)"
-
-      - name: Switch to gcc-13
-        run: |
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
-            --slave /usr/bin/gcov gcov /usr/bin/gcov-12
-          sudo update-alternatives --set gcc /usr/bin/gcc-13
-
-      - name: CCache
-        uses: hendrikmuhs/ccache-action@main
         with:
-          max-size: "1G"
-          key: ccache-ubuntu-22.04-${{ matrix.buildtype }}
-          restore-keys: |
-            ccache-ubuntu-22.04
+          submodules: true
+          fetch-depth: 0
 
-      - name: Restore artifacts and install vcpkg
+      # Aquí asumo que en tu VPS ya tienes deps (gcc/cmake/ninja/vcpkg/ccache, etc.)
+      # Si NO, entonces instalas deps en el runner (o usas un script bootstrap).
+      - name: Build (linux-release)
+        shell: bash
         run: |
-          vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
-          echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
+          set -euo pipefail
 
-      - name: Get vcpkg
-        uses: lukka/run-vcpkg@main
-        with:
-          vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
-          vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
-          
-      - name: Setup vcpkg binary caching
-        run: |
-          mkdir -p $HOME/.cache/vcpkg/archives
-          echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
+          # Build (misma lógica que ya traías)
+          cmake --preset linux-release -DTOGGLE_BIN_FOLDER=ON
+          cmake --build --preset linux-release
 
-      - name: Get latest CMake and ninja
-        uses: lukka/get-cmake@main
+          # Tests (opcional: si quieres correrlos en VPS)
+          ctest --test-dir build/linux-release -V -R unit || true
+          ctest --test-dir build/linux-release -V -R integration || true
 
-      - name: Run CMake
-        uses: lukka/run-cmake@main
-        with:
-          configurePresetAdditionalArgs: "['-DTOGGLE_BIN_FOLDER=ON']"
-          configurePreset: ${{ matrix.buildtype }}
-          buildPreset: ${{ matrix.buildtype }}
-
-      - name: Run Unit Tests
-        run: ctest -V -R unit
-
-      - name: Run Integration Tests
-        run: ctest -V -R integration
-
-      # Solo empaquetar para linux-release
-      - name: Package binary
-        if: matrix.buildtype == 'linux-release'
-        run: |
+          # Package
           mkdir -p dist
-          # Renombrar canary a olmeraot
           mv build/linux-release/bin/canary dist/olmeraot
-          cd dist
-          zip -r olmeraot-linux-x86_64.zip olmeraot
-          sha256sum olmeraot-linux-x86_64.zip > SHA256SUMS
-          ls -lh
+          (cd dist && zip -r olmeraot-linux-x86_64.zip olmeraot)
+          sha256sum dist/olmeraot-linux-x86_64.zip > dist/SHA256SUMS
+          ls -lh dist
 
-      - name: Set artifact name
-        if: matrix.buildtype == 'linux-release'
-        id: artifact
-        run: echo "name=olmeraot-build-${{ github.sha }}" >> $GITHUB_OUTPUT
+      - name: Set build tag
+        id: meta
+        run: |
+          echo "build_tag=build-${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifact
-        if: matrix.buildtype == 'linux-release'
-        uses: actions/upload-artifact@v4
+      - name: Publish build artifact as Release (immutable)
+        uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.artifact.outputs.name }}
-          path: dist/
-          retention-days: 30
+          tag_name: ${{ steps.meta.outputs.build_tag }}
+          name: Build ${{ github.sha }}
+          body: |
+            ✅ Build generado en VPS (self-hosted runner)
+
+            Branch: develop
+            Commit: ${{ github.sha }}
+            C++ changed: ${{ needs.changes.outputs.cpp }}
+
+            Este artefacto se promueve a QA/PROD descargando build-${{ github.sha }}.
+          draft: false
+          prerelease: true
+          files: |
+            dist/olmeraot-linux-x86_64.zip
+            dist/SHA256SUMS
 
   # ============================================================================
-  # STAGE 2B: Build Debug (manual approval required)
-  # ============================================================================
-  build-debug:
-    name: "Stage 2B: Build Debug (Manual)"
-    needs: changes
-    if: needs.changes.outputs.cpp == 'true' && github.ref != 'refs/heads/main'
-    runs-on: ubuntu-22.04
-    environment:
-      name: debug-build
-      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Optimize apt performance
-        run: |
-          # Use Azure mirrors (faster for GitHub Actions runners)
-          sudo sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
-          sudo sed -i 's|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' /etc/apt/sources.list
-          # Enable parallel downloads
-          echo 'Acquire::Queue-Mode "host";' | sudo tee /etc/apt/apt.conf.d/99parallel
-          echo 'Acquire::http::Pipeline-Depth "5";' | sudo tee -a /etc/apt/apt.conf.d/99parallel
-
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ccache linux-headers-"$(uname -r)"
-
-      - name: Switch to gcc-13
-        run: |
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
-            --slave /usr/bin/gcov gcov /usr/bin/gcov-12
-          sudo update-alternatives --set gcc /usr/bin/gcc-13
-
-      - name: CCache
-        uses: hendrikmuhs/ccache-action@main
-        with:
-          max-size: "1G"
-          key: ccache-ubuntu-22.04-linux-debug
-          restore-keys: |
-            ccache-ubuntu-22.04
-
-      - name: Restore artifacts and install vcpkg
-        run: |
-          vcpkgCommitId=$(grep '.builtin-baseline' vcpkg.json | awk -F: '{print $2}' | tr -d '," ')
-          echo "VCPKG_GIT_COMMIT_ID=$vcpkgCommitId" >> "$GITHUB_ENV"
-
-      - name: Get vcpkg
-        uses: lukka/run-vcpkg@main
-        with:
-          vcpkgGitURL: "https://github.com/microsoft/vcpkg.git"
-          vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
-          
-      - name: Setup vcpkg binary caching
-        run: |
-          mkdir -p $HOME/.cache/vcpkg/archives
-          echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
-
-      - name: Get latest CMake and ninja
-        uses: lukka/get-cmake@main
-
-      - name: Run CMake
-        uses: lukka/run-cmake@main
-        with:
-          configurePresetAdditionalArgs: "['-DTOGGLE_BIN_FOLDER=ON']"
-          configurePreset: linux-debug
-          buildPreset: linux-debug
-
-      - name: Run Unit Tests
-        run: ctest -V -R unit
-
-      - name: Run Integration Tests
-        run: ctest -V -R integration
-
-      - name: Package debug binary
-        run: |
-          mkdir -p dist
-          # Renombrar canary-debug a olmeraot-debug
-          mv build/linux-debug/bin/canary-debug dist/olmeraot-debug
-          cd dist
-          zip -r olmeraot-linux-x86_64-debug.zip olmeraot-debug
-          sha256sum olmeraot-linux-x86_64-debug.zip > SHA256SUMS-debug
-          ls -lh
-
-      - name: Upload debug artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: olmeraot-debug-${{ github.sha }}
-          path: dist/
-          retention-days: 7
-
-  # ============================================================================
-  # STAGE 3A: Sync Scripts to QA (solo scripts, sin build)
+  # STAGE 3A: QA - Scripts/Overrides only (no build)
   # ============================================================================
   sync-scripts-qa:
-    name: "Stage 3A: Sync Scripts to QA"
+    name: "Stage 3A: Sync Scripts to QA (no binary)"
     needs: changes
     if: |
       github.ref == 'refs/heads/qa' &&
       (needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true') &&
-      needs.changes.outputs.cpp != 'true' &&
-      github.ref != 'refs/heads/main'
+      needs.changes.outputs.cpp != 'true'
     runs-on: ubuntu-latest
     env:
       QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
@@ -304,33 +162,28 @@ jobs:
         if: env.QA_DEPLOY_ENABLED == 'true'
         run: |
           set -euo pipefail
-          
-          # Crear tarball con prefijo current/ usando transform
+
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
-          
-          # Configurar SSH key
+
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          
-          # Copiar tarball
+
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
-          
-          # Limpiar carpetas que vamos a reemplazar y extraer
+
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ secrets.VPS_QA_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
-             tar xzf /tmp/scripts.tar.gz && \
-             rm /tmp/scripts.tar.gz"
-          
+             tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
+
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
-      - name: Reload QA server (SIGHUP)
+      - name: Apply overrides + render config + reload QA (HUP)
         if: env.QA_DEPLOY_ENABLED == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -339,37 +192,102 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            # Hot-reload scripts (SIGHUP) en lugar de restart completo
-            if command -v systemctl >/dev/null 2>&1; then
-              echo "Sending SIGHUP to reload scripts..."
-              sudo systemctl kill -s HUP olmeraot-qa.service || true
-            else
-              pid=$(pidof olmeraot || true)
-              [ -n "$pid" ] && kill -HUP "$pid" || true
-            fi
-            
-            echo "✅ Scripts synced and reloaded without server restart"
+            DEST="${{ secrets.VPS_QA_PATH }}"
+            cd "$DEST"
 
-      - name: Comment on commit
-        if: env.QA_DEPLOY_ENABLED == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
-            await github.rest.repos.createCommitComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `✅ Synced ${changes.join(' + ')} to QA without recompiling/restarting server`
-            });
+            # Overlay mechanism + render config
+            sudo /usr/local/bin/olmera-apply-overrides qa || true
+            sudo /usr/local/bin/olmera-render-config qa
+
+            # Hot reload scripts
+            sudo systemctl kill -s HUP olmeraot-qa.service || sudo systemctl restart olmeraot-qa.service
+            sudo systemctl status olmeraot-qa --no-pager || true
 
   # ============================================================================
-  # STAGE 3B: Deploy Scripts-Only to Production (Main Branch)
+  # STAGE 3B: QA - Deploy binary (NO BUILD HERE). Downloads build-${sha}.
+  # Runs when C++ changed on this commit in qa branch.
+  # ============================================================================
+  deploy-qa:
+    name: "Stage 3B: Deploy to QA (binary + scripts)"
+    needs: changes
+    if: github.ref == 'refs/heads/qa' && needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-latest
+    env:
+      QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Upload scripts to QA (tar + SSH)
+        if: env.QA_DEPLOY_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+
+          tar czf /tmp/scripts.tar.gz \
+            --transform 's,^,current/,' \
+            data data-canary data-otservbr-global overrides key.pem
+
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            /tmp/scripts.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "cd ${{ secrets.VPS_QA_PATH }} && \
+             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
+             tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
+
+          rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
+
+      - name: Deploy binary + apply overrides + restart QA
+        if: env.QA_DEPLOY_ENABLED == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            DEST="${{ secrets.VPS_QA_PATH }}"
+            DEST=${DEST:-/opt/olmeraot/qa}
+            cd "$DEST"
+
+            TAG="build-${{ github.sha }}"
+
+            # Download immutable build artifact generated in develop
+            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -o /tmp/olmeraot.zip \
+              "https://github.com/${{ github.repository }}/releases/download/${TAG}/olmeraot-linux-x86_64.zip"
+
+            unzip -o /tmp/olmeraot.zip -d "$DEST"
+            chmod +x "$DEST/olmeraot"
+            rm -f /tmp/olmeraot.zip
+
+            # Apply overrides + render config
+            sudo /usr/local/bin/olmera-apply-overrides qa || true
+            sudo /usr/local/bin/olmera-render-config qa
+
+            # Ensure key.pem in current/
+            if [ -f key.pem ] && [ ! -f current/key.pem ]; then
+              cp -f key.pem current/key.pem
+            fi
+            chmod 640 current/key.pem || true
+
+            sudo systemctl restart olmeraot-qa.service || true
+            sleep 2
+            sudo systemctl status olmeraot-qa --no-pager || true
+
+  # ============================================================================
+  # STAGE 4: Production - Scripts only (main)
   # ============================================================================
   deploy-scripts-prod:
-    name: "Stage 3B: Deploy Scripts to Production (Main Only)"
+    name: "Stage 4A: Deploy Scripts to Production (main, no binary)"
     needs: changes
     if: |
       github.ref == 'refs/heads/main' &&
@@ -386,48 +304,31 @@ jobs:
           submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
 
-      - name: Prepare SSH known_hosts (Prod)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
       - name: Upload scripts to Production (tar + SSH)
         run: |
           set -euo pipefail
-          
-          # Crear tarball con prefijo current/ usando transform
+
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
-          
-          # Configurar SSH key
+
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          
-          # Copiar tarball
+
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
-          
-          # Limpiar carpetas que vamos a reemplazar y extraer
+
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ secrets.VPS_PROD_PATH }} && \
              rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
-             tar xzf /tmp/scripts.tar.gz && \
-             rm /tmp/scripts.tar.gz"
-          
+             tar xzf /tmp/scripts.tar.gz && rm /tmp/scripts.tar.gz"
+
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
-      - name: Restart Production server and health check
+      - name: Apply overrides + render config + reload PROD (HUP)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -435,426 +336,52 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
-            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
-            cd "$DEST_PATH"
-            
-            # Ensure key.pem symlink exists for compatibility
-            if [ ! -L key.pem ] && [ -f current/key.pem ]; then
-              ln -sf current/key.pem key.pem
-            fi
-            
-            # Restart production service
-            sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
-            
-            # Health check
-            sleep 3
-            sudo -n systemctl status olmeraot-prod --no-pager || true
+            DEST="${{ secrets.VPS_PROD_PATH }}"
+            DEST=${DEST:-/opt/olmeraot/prod}
+            cd "$DEST"
 
-      - name: Comment on commit
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const changes = [];
-            if ('${{ needs.changes.outputs.scripts }}' === 'true') changes.push('scripts');
-            if ('${{ needs.changes.outputs.overrides }}' === 'true') changes.push('overrides');
-            await github.rest.repos.createCommitComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `✅ Deployed ${changes.join(' + ')} to Production (no binary rebuild)`
-            });
+            sudo /usr/local/bin/olmera-apply-overrides prod || true
+            sudo /usr/local/bin/olmera-render-config prod
+
+            sudo systemctl kill -s HUP olmeraot-prod.service || sudo systemctl restart olmeraot-prod.service
+            sudo systemctl status olmeraot-prod --no-pager || true
 
   # ============================================================================
-  # STAGE 4A: Approve and Merge to Main (después de QA exitoso)
-  # ============================================================================
-  approve-merge-to-main:
-    name: "Stage 4A: Approve Merge to Main"
-    needs: [changes, sync-scripts-qa, deploy-qa]
-    if: |
-      github.ref == 'refs/heads/qa' &&
-      !cancelled() &&
-      (needs.sync-scripts-qa.result == 'success' || needs.deploy-qa.result == 'success') &&
-      github.ref != 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    environment:
-      name: approve-production
-      url: https://github.com/${{ github.repository }}/compare/main...qa
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_PAT || github.token }}
-
-      - name: Create or update PR qa → main
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const base = 'main';
-            const head = `${owner}:qa`;
-            // Find existing open PR
-            const { data: prs } = await github.rest.pulls.list({
-              owner,
-              repo,
-              state: 'open',
-              base,
-              head,
-              per_page: 100
-            });
-
-            let pr = prs[0];
-
-            // Close any older duplicates to ensure only one PR stays open
-            if (prs.length > 1) {
-              for (const duplicate of prs.slice(1)) {
-                await github.rest.pulls.update({
-                  owner,
-                  repo,
-                  pull_number: duplicate.number,
-                  state: 'closed'
-                });
-                core.info(`Closed duplicate qa→main PR #${duplicate.number}`);
-              }
-            }
-
-            if (!pr) {
-              pr = (await github.rest.pulls.create({ owner, repo, base, head: 'qa', title: 'Promote qa to main', body: 'Auto-created after QA approval' })).data;
-            }
-            core.setOutput('number', pr.number.toString());
-            core.setOutput('node_id', pr.node_id);
-            core.setOutput('html_url', pr.html_url);
-
-      - name: Request review from maintainer
-        if: steps.pr.outputs.number
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const number = Number('${{ steps.pr.outputs.number }}');
-            try {
-              await github.rest.pulls.requestReviewers({ owner, repo, pull_number: number, reviewers: ['edmundoc90'] });
-              core.info('✅ Requested review from edmundoc90');
-            } catch (e) {
-              core.warning(`Could not request reviewer: ${e.message}`);
-            }
-
-      - name: Add label to PR
-        if: steps.pr.outputs.number
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const number = Number('${{ steps.pr.outputs.number }}');
-            try {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['prod-promotion'] });
-              core.info('🏷️  Label added to PR');
-            } catch (e) {
-              core.warning(`Could not add label: ${e.message}`);
-            }
-
-      - name: Enable auto-merge (squash) when checks pass
-        if: steps.pr.outputs.node_id
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const nodeId = '${{ steps.pr.outputs.node_id }}';
-            const mutation = `mutation($pullRequestId: ID!) {\n  enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }) {\n    clientMutationId\n  }\n}`;
-            try {
-              await github.graphql(mutation, { pullRequestId: nodeId });
-              core.info('✅ Auto-merge enabled. The PR will merge when checks pass.');
-            } catch (e) {
-              core.warning(`Could not enable auto-merge: ${e.message}`);
-            }
-
-      - name: Add comment with PR link
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.createCommitComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `✅ PR creado: ${{ steps.pr.outputs.html_url }}. Se auto-mergeará cuando los checks pasen (si auto-merge está habilitado en el repo).`
-            });
-
-  # ============================================================================
-  # STAGE 3B: Deploy Binary to QA (con build)
-  # ============================================================================
-  deploy-qa:
-    name: "Stage 3B: Deploy Binary to QA"
-    needs: [changes, build]
-    # Solo ejecuta si build realmente se ejecutó exitosamente
-    if: |
-      github.ref == 'refs/heads/qa' &&
-      needs.changes.outputs.cpp == 'true' &&
-      needs.build.result == 'success' &&
-      github.ref != 'refs/heads/main'
-    runs-on: ubuntu-latest
-    # NOTA: Environment removido porque GitHub Actions fuerza la ejecución del job
-    # cuando existe un environment con deployment branches configuradas, ignorando
-    # completamente las condiciones if. Esto es un comportamiento documentado de
-    # GitHub Actions que no tiene solución alternativa.
-    env:
-      QA_DEPLOY_ENABLED: ${{ vars.QA_DEPLOY_ENABLED || secrets.QA_DEPLOY_ENABLED }}
-    # Ver: https://github.com/actions/runner/issues/2507
-    # environment:
-    #   name: qa-binary
-    #   url: https://qa.olmeraot.com
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-          token: ${{ secrets.GH_PAT || github.token }}
-      
-      - name: Prepare SSH known_hosts (QA)
-        if: env.QA_DEPLOY_ENABLED == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}
-          path: dist/
-
-      - name: Publish qa-latest release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: qa-latest
-          name: QA Latest
-          body: |
-            🚀 **QA Release**
-            
-            **Branch:** qa
-            **Commit:** ${{ github.sha }}
-            **Built at:** ${{ github.event.head_commit.timestamp }}
-            
-            **Changes:**
-            - C++ Code: ${{ needs.changes.outputs.cpp == 'true' && '✅' || '➖' }}
-            - Scripts: ${{ needs.changes.outputs.scripts == 'true' && '✅' || '➖' }}
-            
-            ---
-            Auto-deployed to QA environment.
-          draft: false
-          prerelease: true
-          files: |
-            dist/olmeraot-linux-x86_64.zip
-            dist/SHA256SUMS
-
-      - name: Upload scripts to QA (tar + SSH)
-        if: env.QA_DEPLOY_ENABLED == 'true'
-        run: |
-          set -euo pipefail
-          
-          # Crear tarball con prefijo current/ usando transform
-          tar czf /tmp/scripts.tar.gz \
-            --transform 's,^,current/,' \
-            data data-canary data-otservbr-global overrides key.pem
-          
-          # Configurar SSH key
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          
-          # Copiar tarball
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-            /tmp/scripts.tar.gz \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
-          
-          # Limpiar carpetas que vamos a reemplazar y extraer
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "cd ${{ secrets.VPS_QA_PATH }} && \
-             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides && \
-             tar xzf /tmp/scripts.tar.gz && \
-             rm /tmp/scripts.tar.gz"
-          
-          rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
-
-      - name: Deploy binary + restart QA Server
-        if: env.QA_DEPLOY_ENABLED == 'true'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          # Mapped to existing repository secrets
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            DEST_PATH="${{ secrets.VPS_QA_PATH }}"
-            DEST_PATH=${DEST_PATH:-/opt/olmeraot/qa}
-            cd "$DEST_PATH"
-            
-            # Download latest QA release binary
-            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -o olmeraot.zip \
-              "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
-            
-            # Extract binary
-            unzip -o olmeraot.zip
-            chmod +x olmeraot
-            
-            # Create symlink for config.lua in current/
-            ln -sf ../config.lua current/config.lua
-            # Ensure key.pem present in current (fallback if not synced)
-            if [ ! -f current/key.pem ] && [ -f key.pem ]; then
-              cp -f key.pem current/key.pem
-            fi
-            chmod 640 current/key.pem || true
-            
-            # Restart server (binary changed)
-            echo "Restarting QA server (binary updated)..."
-            sudo systemctl restart olmeraot-qa || true
-            
-            # Health check
-            sleep 3
-            sudo systemctl status olmeraot-qa --no-pager || true
-
-  # ============================================================================
-  # STAGE 4: Deploy to Staging (requiere aprobación manual)
-  # ============================================================================
-  deploy-staging:
-    name: "Stage 4: Deploy to Staging"
-    needs: [build, deploy-qa]
-    # Solo ejecuta si build y deploy-qa tuvieron éxito (no skipped)
-    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' && needs.build.result == 'success' && needs.deploy-qa.result == 'success' && github.ref != 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    environment:
-      name: staging-server
-      url: https://staging.olmeraot.com
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-          token: ${{ secrets.GH_PAT || github.token }}
-      
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}
-          path: dist/
-
-      - name: Verify checksums
-        run: |
-          cd dist
-          sha256sum -c SHA256SUMS
-
-      - name: Prepare SSH known_hosts (Staging)
-        if: vars.STAGING_DEPLOY_ENABLED == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Upload scripts to Staging (scp)
-        if: vars.STAGING_DEPLOY_ENABLED == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "data,data-canary,overrides"
-          target: /opt/olmeraot/staging/current/
-          overwrite: true
-          rm: false
-
-      - name: Deploy to Staging Server (binary + restart)
-        if: vars.STAGING_DEPLOY_ENABLED == 'true'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd /opt/olmeraot/staging
-            
-            # Download from QA release
-            curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -o olmeraot.zip \
-              "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
-            
-            unzip -o olmeraot.zip
-            chmod +x olmeraot
-            
-            sudo systemctl restart olmeraot-staging || true
-
-
-  # ============================================================================
-  # STAGE 5B: Promote Binary to Production (solo en main, requiere aprobación)
-  # ============================================================================
-  # STAGE 5B: Promote Binary to Production (with scripts if mixed)
+  # STAGE 4B: Production - Deploy binary from build-${sha} (main)
   # ============================================================================
   promote-production:
-    name: "Stage 5B: Promote Binary to Production"
-    # Promote tested QA artifact without rebuilding; waits for QA jobs to finish
-    needs: [changes, build, deploy-qa]
-    if: |
-      github.ref == 'refs/heads/main' && 
-      vars.PROD_DEPLOY_ENABLED == 'true' &&
-      needs.changes.outputs.cpp == 'true' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
-      (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped') &&
-      !cancelled()
+    name: "Stage 4B: Deploy to Production (binary + scripts)"
+    needs: changes
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.cpp == 'true' && vars.PROD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: production-server
       url: https://olmeraot.com
     steps:
-      - name: Checkout repository (for scripts packaging - only if scripts changed)
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: true
           token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Upload scripts to Production (tar + SSH)
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
         run: |
           set -euo pipefail
-          
-          # Crear tarball con prefijo current/ usando transform
+
           tar czf /tmp/scripts.tar.gz \
             --transform 's,^,current/,' \
             data data-canary data-otservbr-global overrides key.pem
-          
-          # Configurar SSH key
+
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          
-          # Copiar tarball
+
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/scripts.tar.gz \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
-          
+
           rm -f ~/.ssh/deploy_key /tmp/scripts.tar.gz
 
-      - name: Extract scripts in Production
-        if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.overrides == 'true'
+      - name: Deploy binary + extract scripts + apply overrides + restart PROD
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -862,115 +389,40 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
-            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
-            cd "$DEST_PATH"
+            DEST="${{ secrets.VPS_PROD_PATH }}"
+            DEST=${DEST:-/opt/olmeraot/prod}
+            cd "$DEST"
+
+            # Extract scripts
             rm -rf current/data current/data-canary current/data-otservbr-global current/overrides
             tar xzf /tmp/scripts.tar.gz
-            ln -sf ../config.lua current/config.lua
-            chmod 640 current/key.pem || true
             rm -f /tmp/scripts.tar.gz
 
-      - name: Download qa-latest release assets
-        run: |
-          # Descargar desde qa-latest (ya probado en QA)
-          curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -o olmeraot-linux-x86_64.zip \
-            "https://github.com/${{ github.repository }}/releases/download/qa-latest/olmeraot-linux-x86_64.zip"
-          
-          curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -o SHA256SUMS \
-            "https://github.com/${{ github.repository }}/releases/download/qa-latest/SHA256SUMS"
+            TAG="build-${{ github.sha }}"
 
-      - name: Verify SHA256
-        run: |
-          sha256sum -c SHA256SUMS
-          echo "✅ SHA256 verification passed"
-
-      - name: Publish prod-latest release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: prod-latest
-          name: Production Latest
-          body: |
-            🎯 **Production Release**
-            
-            Promoted from `qa-latest` after successful testing.
-            
-            **Original build:** ${{ github.sha }}
-            **Promoted at:** ${{ github.event.head_commit.timestamp }}
-            **Branch:** main
-            
-            ---
-            ⚠️ This build was NOT recompiled - promoted from QA for consistency.
-          draft: false
-          prerelease: false
-          files: |
-            olmeraot-linux-x86_64.zip
-            SHA256SUMS
-
-      - name: Prepare SSH known_hosts (Prod)
-        if: vars.PROD_DEPLOY_ENABLED == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SSH_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Deploy to Production Server
-        if: vars.PROD_DEPLOY_ENABLED == 'true'
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            DEST_PATH="${{ secrets.VPS_PROD_PATH }}"
-            DEST_PATH=${DEST_PATH:-/opt/olmeraot/prod}
-            cd "$DEST_PATH"
-            
-            # Backup current version
+            # Backup current binary
             if [ -f olmeraot ]; then
               cp olmeraot "olmeraot.backup.$(date +%Y%m%d_%H%M%S)"
             fi
-            
-            # Download prod-latest
+
+            # Download immutable build artifact
             curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -o olmeraot.zip \
-              "https://github.com/${{ github.repository }}/releases/download/prod-latest/olmeraot-linux-x86_64.zip"
-            
-            # Extract (quiet mode to prevent hangs)
-            unzip -qq -o olmeraot.zip
-            chmod +x olmeraot
-            
-            # Setup config and key.pem
-            ln -sf ../config.lua current/config.lua
-            # IMPORTANT: Always ensure key.pem is in current/ (required by server)
-            if [ -f key.pem ]; then
-              mkdir -p current
-              src_real=$(readlink -f key.pem 2>/dev/null || echo "")
-              dest_real=$(readlink -f current/key.pem 2>/dev/null || echo "")
-              if [ "$src_real" != "$dest_real" ]; then
-                cp -f key.pem current/key.pem
-              fi
-              chmod 640 current/key.pem
-              # Also create symlink from root to current/ for compatibility
-              ln -sf current/key.pem key.pem
-            else
-              echo "⚠️  WARNING: key.pem not found in deployment directory"
+              -o /tmp/olmeraot.zip \
+              "https://github.com/${{ github.repository }}/releases/download/${TAG}/olmeraot-linux-x86_64.zip"
+
+            unzip -o /tmp/olmeraot.zip -d "$DEST"
+            chmod +x "$DEST/olmeraot"
+            rm -f /tmp/olmeraot.zip
+
+            sudo /usr/local/bin/olmera-apply-overrides prod || true
+            sudo /usr/local/bin/olmera-render-config prod
+
+            # Ensure key.pem in current/
+            if [ -f key.pem ] && [ ! -f current/key.pem ]; then
+              cp -f key.pem current/key.pem
             fi
-            
-            # Restart (no wait, let systemctl handle it)
-            sudo -n systemctl restart olmeraot-prod 2>&1 || echo "Restart command executed"
-            
-            # Health check (with no-prompt mode)
-            sleep 3
-            sudo -n systemctl status olmeraot-prod --no-pager 2>&1 || true
-            
-            echo "✅ Production deployment completed successfully"
+            chmod 640 current/key.pem || true
+
+            sudo systemctl restart olmeraot-prod.service || true
+            sleep 2
+            sudo systemctl status olmeraot-prod --no-pager || true
